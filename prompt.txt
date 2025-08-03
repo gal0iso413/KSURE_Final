@@ -1,0 +1,96 @@
+## **Final Revised Plan: XGBoost Risk Prediction Model Development**
+
+### **Phase 1: Foundation & Understanding**
+
+**Step 1: Simple Baseline Model**
+
+- Load data from 1_Dataset.py output
+- Basic data exploration (shape, missing values, target distribution)
+- Create simplest possible XGBoost model with default parameters
+- Use simple train/test split (80/20) without considering dates
+- *Goal: Establish working pipeline and baseline performance*
+
+**Step 2: Basic Evaluation Framework**
+
+- Implement proper multi-class evaluation metrics
+- Create confusion matrix visualization
+- Document baseline performance for comparison
+- *Goal: Understand current model performance*
+
+**Step 3: Comprehensive Exploratory Data Analysis (EDA)** ⭐ *NEW*
+
+- **Data Quality Analysis**: Missing patterns, outliers, data types
+- **Temporal Patterns**: Distribution changes over time, seasonality
+- **Target Variable Analysis**: Class distribution over time, business cycles impact
+- **Feature Relationships**: Correlation analysis, feature distributions by target class
+- **Business Logic Validation**: Do the data patterns make business sense?
+- **Data Leakage Investigation**: Identify potentially problematic features
+- *Goal: Deep understanding of data characteristics to inform all subsequent decisions*
+
+### **Phase 2: Data Strategy (Informed by EDA)**
+
+**Step 4: Temporal Train/Test Split**
+
+- Implement date-based splitting using insights from EDA
+- Analyze temporal distribution patterns discovered in Step 3
+- *Goal: Ensure model can predict future cases*
+
+**Step 5: Class Imbalance Strategy**
+
+- Apply imbalance handling methods based on EDA findings
+- Use temporal patterns to inform resampling strategies
+- *Goal: Address data imbalance systematically*
+
+### **Phase 3: Model Optimization**
+
+**Step 6: EDA-Informed Feature Engineering & Selection**
+
+- Apply feature selection based on EDA insights
+- Create new features if patterns suggest opportunities
+- Remove problematic features identified in EDA
+- *Goal: Optimize feature set for model performance*
+
+**Step 7: Hyperparameter Tuning with Optuna**
+
+- Define search space based on data characteristics
+- *Goal: Find optimal model configuration*
+
+### **Phase 4: Advanced Development** ⚡ *DECISION POINT*
+
+> Practical Check: After Step 7, evaluate if current performance meets business needs. If yes, consider proceeding directly to Phase 6 (Analysis) rather than additional complexity.
+> 
+
+**Step 8: Ordinal Target Handling** *(If needed)*
+
+- Test ordinal regression approaches
+- *Goal: Handle ordinal nature of risk levels*
+
+**Step 9: Advanced Validation** *(If needed)*
+
+- Implement time series cross-validation
+- *Goal: Ensure robust performance*
+
+### **Phase 5: Analysis & Interpretation**
+
+**Step 10: Feature Importance & Interpretability**
+
+- Generate SHAP values and business interpretations
+- *Goal: Provide explainable predictions*
+
+**Step 11: Comprehensive Visualization**
+
+- Create business-focused visualizations
+- *Goal: Generate actionable insights*
+
+### **Phase 6: Validation & Documentation**
+
+**Step 12: Model Validation & Testing**
+
+- Test across multiple periods
+- Validate business assumptions
+- *Goal: Ensure production readiness*
+
+**Step 13: Final Documentation & Deployment Prep**
+
+- Document limitations and recommendations
+- *Goal: Deliver production-ready model*

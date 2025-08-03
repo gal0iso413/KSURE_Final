@@ -1,0 +1,52 @@
+# Dataset files (too large for GitHub)
+dataset/
+result/
+outputs/
+
+# Data files
+*.csv
+*.xlsx
+*.xls
+*.parquet
+
+# Model files (can be large)
+*.pkl
+*.joblib
+*.h5
+*.model
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+ksure/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Archives
+*.zip
+*.rar
+*.tar.gz
+*.zpaq
