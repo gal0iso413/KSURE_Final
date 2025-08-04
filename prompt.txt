@@ -60,10 +60,11 @@
 > Practical Check: After Step 7, evaluate if current performance meets business needs. If yes, consider proceeding directly to Phase 6 (Analysis) rather than additional complexity.
 > 
 
-**Step 8: Ordinal Target Handling** *(If needed)*
-
-- Test ordinal regression approaches
-- *Goal: Handle ordinal nature of risk levels*
+**Step 8: Model Architecture Experiments ⭐ NEW
+- Test united model vs individual models
+- Test ordinal classification vs regression
+- Compare performance metrics
+- Choose best approach based on results
 
 **Step 9: Advanced Validation** *(If needed)*
 
