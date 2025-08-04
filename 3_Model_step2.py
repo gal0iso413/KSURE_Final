@@ -28,7 +28,53 @@ from sklearn.metrics import (
 import xgboost as xgb
 from typing import Dict, List, Tuple, Optional
 import warnings
+import platform
+import matplotlib.font_manager as fm
+import os
 warnings.filterwarnings('ignore')
+
+# Configure matplotlib for non-interactive backend (no GUI needed)
+import matplotlib
+matplotlib.use('Agg')
+
+# Configure Korean font for matplotlib
+def setup_korean_font():
+    """Set up Korean font for matplotlib visualizations"""
+    system = platform.system()
+    
+    if system == "Windows":
+        # Common Korean fonts on Windows
+        korean_fonts = ['Malgun Gothic', 'NanumGothic', 'NanumBarunGothic', 'Gulim', 'Dotum']
+    elif system == "Darwin":  # macOS
+        korean_fonts = ['AppleGothic', 'NanumGothic']
+    else:  # Linux
+        korean_fonts = ['NanumGothic', 'NanumBarunGothic', 'UnDotum']
+    
+    # Try to find and set Korean font
+    available_fonts = [f.name for f in fm.fontManager.ttflist]
+    korean_font = None
+    
+    for font in korean_fonts:
+        if font in available_fonts:
+            korean_font = font
+            break
+    
+    if korean_font:
+        plt.rcParams['font.family'] = korean_font
+        print(f"✅ Korean font set: {korean_font}")
+    else:
+        # Fallback: try to use any available font that supports Korean
+        print("⚠️  Preferred Korean fonts not found. Trying fallback options...")
+        plt.rcParams['font.family'] = ['DejaVu Sans', 'Liberation Sans', 'sans-serif']
+        print("📝 Using fallback font. Korean characters may not display correctly.")
+    
+    # Ensure minus signs display correctly
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    return korean_font
+
+# Set up Korean font
+setup_korean_font()
 
 # Set style for better plots
 plt.style.use('default')
@@ -59,18 +105,92 @@ class AdvancedEvaluationFramework:
         self.predictions = {}
         self.evaluation_results = {}
         self.feature_columns = None
+        self.korean_font = setup_korean_font()
+        
+        # Create results directory
+        self.results_dir = self._create_results_directory()
+        print(f"📁 Results will be saved to: {self.results_dir}")
         
         # Risk level definitions for business interpretation
         self.risk_levels = {
-            0: "No Risk",
-            1: "Low Risk", 
-            2: "Medium Risk",
-            3: "High Risk"
+            0: "위험없음 (No Risk)",
+            1: "낮은위험 (Low Risk)", 
+            2: "중간위험 (Medium Risk)",
+            3: "높은위험 (High Risk)"
         }
         
         print("🔍 Advanced Evaluation Framework Initialized")
         print(f"📊 Target variables: {config['target_columns']}")
         print(f"🎯 Focus: High-risk detection performance")
+    
+    def _create_results_directory(self) -> str:
+        """
+        Create results directory for saving outputs
+        
+        Returns:
+            Path to created results directory
+        """
+        results_dir = "result/step2_evaluation"
+        
+        # Create main results directory
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Create subdirectories for different types of outputs
+        subdirs = ['visualizations', 'metrics', 'documentation']
+        for subdir in subdirs:
+            os.makedirs(os.path.join(results_dir, subdir), exist_ok=True)
+        
+        return results_dir
+    
+    def _save_plot(self, filename: str, dpi: int = 300, bbox_inches: str = 'tight') -> str:
+        """
+        Save current plot to results directory
+        
+        Args:
+            filename: Name of the file (without extension)
+            dpi: Resolution for PNG files
+            bbox_inches: Bounding box setting
+            
+        Returns:
+            Full path to saved file
+        """
+        # Save as PNG only
+        png_path = os.path.join(self.results_dir, 'visualizations', f"{filename}.png")
+        
+        plt.savefig(png_path, dpi=dpi, bbox_inches=bbox_inches, facecolor='white')
+        plt.close()  # Close figure to free memory
+        
+        print(f"  💾 Saved: {filename}.png")
+        return png_path
+    
+    def load_csv_with_korean_encoding(self, file_path: str) -> pd.DataFrame:
+        """
+        Load CSV file with proper Korean encoding handling
+        
+        Args:
+            file_path: Path to CSV file
+            
+        Returns:
+            Loaded DataFrame with proper Korean text
+        """
+        encodings_to_try = ['utf-8', 'cp949', 'euc-kr', 'utf-8-sig']
+        
+        for encoding in encodings_to_try:
+            try:
+                df = pd.read_csv(file_path, encoding=encoding)
+                print(f"✅ Successfully loaded {file_path} with {encoding} encoding")
+                return df
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        
+        # If all encodings fail, try with error handling
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8', errors='ignore')
+            print(f"⚠️  Loaded {file_path} with error handling - some characters may be corrupted")
+            return df
+        except Exception as e:
+            print(f"❌ Failed to load {file_path}: {e}")
+            raise
     
     def load_and_train_baseline_models(self):
         """
@@ -80,8 +200,8 @@ class AdvancedEvaluationFramework:
         print("1️⃣ LOADING DATA & TRAINING BASELINE MODELS")
         print("="*60)
         
-        # Load data
-        self.data = pd.read_csv(self.config['data_path'])
+        # Load data with Korean encoding support
+        self.data = self.load_csv_with_korean_encoding(self.config['data_path'])
         print(f"✅ Data loaded: {self.data.shape}")
         
         # Apply exclusions
@@ -253,19 +373,62 @@ class AdvancedEvaluationFramework:
             print(f"   📊 Cohen's Kappa: {kappa:.4f}")
         
         self.evaluation_results = evaluation_results
+        
+        # Save evaluation metrics to file
+        self._save_evaluation_metrics(evaluation_results)
+        
         return evaluation_results
+    
+    def _save_evaluation_metrics(self, evaluation_results: Dict):
+        """
+        Save detailed evaluation metrics to CSV and JSON files
+        
+        Args:
+            evaluation_results: Dictionary of evaluation results
+        """
+        print("\n💾 Saving evaluation metrics to files...")
+        
+        # Create summary table for CSV
+        summary_data = []
+        for target_name, results in evaluation_results.items():
+            summary_data.append({
+                'Model': target_name,
+                'Accuracy': results['basic_metrics']['accuracy'],
+                'Balanced_Accuracy': results['basic_metrics']['balanced_accuracy'],
+                'MAE_Raw': results['basic_metrics']['mae_raw'],
+                'MAE_Rounded': results['basic_metrics']['mae_rounded'],
+                'Cohen_Kappa': results['basic_metrics']['cohen_kappa'],
+                'High_Risk_Precision': results['high_risk_metrics']['precision'],
+                'High_Risk_Recall': results['high_risk_metrics']['recall'],
+                'High_Risk_F1': results['high_risk_metrics']['f1_score'],
+                'Sample_Size': results['sample_size']
+            })
+        
+        # Save summary CSV
+        summary_df = pd.DataFrame(summary_data)
+        csv_path = os.path.join(self.results_dir, 'metrics', 'evaluation_summary.csv')
+        summary_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print(f"  📊 Summary metrics saved: evaluation_summary.csv")
+        
+        # Save detailed JSON
+        json_path = os.path.join(self.results_dir, 'metrics', 'detailed_evaluation.json')
+        with open(json_path, 'w', encoding='utf-8') as f:
+            import json
+            json.dump(evaluation_results, f, indent=2, default=str, ensure_ascii=False)
+        print(f"  📄 Detailed metrics saved: detailed_evaluation.json")
     
     def create_confusion_matrices(self):
         """
-        Create detailed confusion matrix visualizations
+        Create detailed confusion matrix visualizations with Korean font support
         """
         print("\n" + "="*60)
         print("3️⃣ CONFUSION MATRIX ANALYSIS")
         print("="*60)
         
         n_models = len(self.predictions)
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        fig.suptitle('Confusion Matrix Analysis - Step 2 Evaluation', fontsize=16, fontweight='bold')
+        fig, axes = plt.subplots(2, 2, figsize=(18, 14))
+        fig.suptitle('혼동행렬 분석 - 2단계 평가 (Confusion Matrix Analysis - Step 2 Evaluation)', 
+                     fontsize=16, fontweight='bold')
         
         axes = axes.flatten()
         
@@ -282,16 +445,21 @@ class AdvancedEvaluationFramework:
             # Normalize confusion matrix
             cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
             
-            # Create heatmap
+            # Create heatmap with Korean support
             ax = axes[i]
             sns.heatmap(cm_normalized, annot=True, fmt='.3f', cmap='Blues',
                        xticklabels=[self.risk_levels[j] for j in [0,1,2,3]],
                        yticklabels=[self.risk_levels[j] for j in [0,1,2,3]],
                        ax=ax)
             
-            ax.set_title(f'{target_name} - Confusion Matrix (Normalized)')
-            ax.set_xlabel('Predicted Risk Level')
-            ax.set_ylabel('Actual Risk Level')
+            ax.set_title(f'{target_name} - 혼동행렬 (정규화) | Confusion Matrix (Normalized)', 
+                        fontsize=12)
+            ax.set_xlabel('예측 위험도 (Predicted Risk Level)', fontsize=10)
+            ax.set_ylabel('실제 위험도 (Actual Risk Level)', fontsize=10)
+            
+            # Rotate labels for better readability
+            ax.tick_params(axis='x', rotation=45)
+            ax.tick_params(axis='y', rotation=0)
             
             # Print confusion matrix analysis
             print(f"\n📊 {target_name} Confusion Matrix Analysis:")
@@ -302,19 +470,20 @@ class AdvancedEvaluationFramework:
                         print(f"     Actual {self.risk_levels[actual]} → Predicted {self.risk_levels[predicted]}: {cm[actual, predicted]}")
         
         plt.tight_layout()
-        plt.show()
+        self._save_plot("01_confusion_matrices")
     
     def analyze_error_patterns(self):
         """
-        Analyze detailed error patterns across models
+        Analyze detailed error patterns across models with Korean font support
         """
         print("\n" + "="*60)
         print("4️⃣ ERROR PATTERN ANALYSIS")
         print("="*60)
         
         # Create error analysis visualization
-        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-        fig.suptitle('Error Pattern Analysis - Business Impact Focus', fontsize=16, fontweight='bold')
+        fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+        fig.suptitle('오차 패턴 분석 - 비즈니스 영향 중심 (Error Pattern Analysis - Business Impact Focus)', 
+                     fontsize=16, fontweight='bold')
         
         axes = axes.flatten()
         
@@ -335,9 +504,9 @@ class AdvancedEvaluationFramework:
             colors = ['red' if x < 0 else 'orange' if x > 0 else 'green' for x in error_counts.index]
             bars = ax.bar(error_counts.index, error_counts.values, color=colors, alpha=0.7)
             
-            ax.set_title(f'{target_name} - Prediction Errors')
-            ax.set_xlabel('Error (Predicted - Actual)')
-            ax.set_ylabel('Count')
+            ax.set_title(f'{target_name} - 예측 오차 (Prediction Errors)', fontsize=12)
+            ax.set_xlabel('오차 (예측값 - 실제값) | Error (Predicted - Actual)', fontsize=10)
+            ax.set_ylabel('빈도 (Count)', fontsize=10)
             ax.grid(True, alpha=0.3)
             
             # Add error interpretation
@@ -346,12 +515,13 @@ class AdvancedEvaluationFramework:
             perfect = (errors == 0).sum()       # Perfect predictions
             
             ax.text(0.02, 0.98, 
-                   f'Perfect: {perfect}\nUnder-estimate: {underestimate}\nOver-estimate: {overestimate}',
+                   f'정확한 예측 (Perfect): {perfect}\n과소추정 (Under-estimate): {underestimate}\n과대추정 (Over-estimate): {overestimate}',
                    transform=ax.transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                   fontsize=9)
         
         plt.tight_layout()
-        plt.show()
+        self._save_plot("02_error_patterns")
         
         # Print business impact analysis
         print(f"\n💼 BUSINESS IMPACT ANALYSIS:")
@@ -373,7 +543,7 @@ class AdvancedEvaluationFramework:
     
     def create_performance_comparison(self):
         """
-        Create comprehensive performance comparison across models
+        Create comprehensive performance comparison across models with Korean font support
         """
         print("\n" + "="*60)
         print("5️⃣ PERFORMANCE COMPARISON ACROSS MODELS")
@@ -397,55 +567,56 @@ class AdvancedEvaluationFramework:
         comparison_df = pd.DataFrame(comparison_data)
         
         # Create comparison visualization
-        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
-        fig.suptitle('Model Performance Comparison - Step 2 Baseline', fontsize=16, fontweight='bold')
+        fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+        fig.suptitle('모델 성능 비교 - 2단계 기준선 (Model Performance Comparison - Step 2 Baseline)', 
+                     fontsize=16, fontweight='bold')
         
         # 1. Overall performance metrics
         ax1 = axes[0, 0]
         x_pos = np.arange(len(comparison_df))
         width = 0.25
         
-        ax1.bar(x_pos - width, comparison_df['Accuracy'], width, label='Accuracy', alpha=0.8)
-        ax1.bar(x_pos, comparison_df['Balanced_Acc'], width, label='Balanced Acc', alpha=0.8)
-        ax1.bar(x_pos + width, comparison_df['Cohen_Kappa'], width, label='Cohen Kappa', alpha=0.8)
+        ax1.bar(x_pos - width, comparison_df['Accuracy'], width, label='정확도 (Accuracy)', alpha=0.8)
+        ax1.bar(x_pos, comparison_df['Balanced_Acc'], width, label='균형정확도 (Balanced Acc)', alpha=0.8)
+        ax1.bar(x_pos + width, comparison_df['Cohen_Kappa'], width, label='코헨 카파 (Cohen Kappa)', alpha=0.8)
         
-        ax1.set_title('Overall Performance Metrics')
-        ax1.set_ylabel('Score')
+        ax1.set_title('전체 성능 지표 (Overall Performance Metrics)', fontsize=12)
+        ax1.set_ylabel('점수 (Score)', fontsize=10)
         ax1.set_xticks(x_pos)
         ax1.set_xticklabels(comparison_df['Model'], rotation=45)
-        ax1.legend()
+        ax1.legend(fontsize=9)
         ax1.grid(True, alpha=0.3)
         
         # 2. High-risk detection performance
         ax2 = axes[0, 1]
-        ax2.bar(x_pos - width/2, comparison_df['High_Risk_Precision'], width, label='Precision', alpha=0.8)
-        ax2.bar(x_pos + width/2, comparison_df['High_Risk_Recall'], width, label='Recall', alpha=0.8)
+        ax2.bar(x_pos - width/2, comparison_df['High_Risk_Precision'], width, label='정밀도 (Precision)', alpha=0.8)
+        ax2.bar(x_pos + width/2, comparison_df['High_Risk_Recall'], width, label='재현율 (Recall)', alpha=0.8)
         
-        ax2.set_title('High-Risk Detection Performance')
-        ax2.set_ylabel('Score')
+        ax2.set_title('고위험 탐지 성능 (High-Risk Detection Performance)', fontsize=12)
+        ax2.set_ylabel('점수 (Score)', fontsize=10)
         ax2.set_xticks(x_pos)
         ax2.set_xticklabels(comparison_df['Model'], rotation=45)
-        ax2.legend()
+        ax2.legend(fontsize=9)
         ax2.grid(True, alpha=0.3)
         
         # 3. Sample sizes
         ax3 = axes[1, 0]
         ax3.bar(comparison_df['Model'], comparison_df['Sample_Size'], alpha=0.8)
-        ax3.set_title('Test Sample Sizes')
-        ax3.set_ylabel('Number of Samples')
+        ax3.set_title('테스트 샘플 크기 (Test Sample Sizes)', fontsize=12)
+        ax3.set_ylabel('샘플 수 (Number of Samples)', fontsize=10)
         ax3.tick_params(axis='x', rotation=45)
         ax3.grid(True, alpha=0.3)
         
         # 4. MAE comparison
         ax4 = axes[1, 1]
         ax4.bar(comparison_df['Model'], comparison_df['MAE'], alpha=0.8, color='orange')
-        ax4.set_title('Mean Absolute Error')
-        ax4.set_ylabel('MAE')
+        ax4.set_title('평균 절대 오차 (Mean Absolute Error)', fontsize=12)
+        ax4.set_ylabel('MAE', fontsize=10)
         ax4.tick_params(axis='x', rotation=45)
         ax4.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.show()
+        self._save_plot("03_performance_comparison")
         
         # Print detailed comparison table
         print(f"\n📊 DETAILED PERFORMANCE COMPARISON TABLE:")
@@ -525,10 +696,11 @@ class AdvancedEvaluationFramework:
         
         # Save documentation
         import json
-        with open('step2_baseline_documentation.json', 'w') as f:
+        doc_path = os.path.join(self.results_dir, 'documentation', 'step2_baseline_documentation.json')
+        with open(doc_path, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
         
-        print("✅ Baseline documentation saved to 'step2_baseline_documentation.json'")
+        print(f"✅ Baseline documentation saved to '{doc_path}'")
         
         # Print executive summary
         print(f"\n📋 EXECUTIVE SUMMARY - STEP 2 BASELINE EVALUATION:")
@@ -579,9 +751,27 @@ class AdvancedEvaluationFramework:
             print("✅ Baseline performance documented")
             print("✅ Ready for Step 3: Comprehensive EDA")
             
+            # Print results summary
+            self._print_results_summary()
+            
         except Exception as e:
             print(f"\n❌ STEP 2 FAILED: {e}")
             raise
+    
+    def _print_results_summary(self):
+        """Print summary of all generated files and outputs"""
+        print(f"\n📁 RESULTS SUMMARY:")
+        print(f"   All outputs saved to: {self.results_dir}")
+        print(f"   📊 Visualizations:")
+        print(f"      • 01_confusion_matrices.png")
+        print(f"      • 02_error_patterns.png")
+        print(f"      • 03_performance_comparison.png")
+        print(f"   📈 Metrics:")
+        print(f"      • evaluation_summary.csv")
+        print(f"      • detailed_evaluation.json")
+        print(f"   📄 Documentation:")
+        print(f"      • step2_baseline_documentation.json")
+        print(f"\n💡 Use these files for offline analysis and reporting!")
 
 
 def get_step2_config():
@@ -613,6 +803,19 @@ if __name__ == "__main__":
     
     print("🔍 Starting XGBoost Risk Prediction Model - Step 2")
     print("="*60)
+    
+    # Test Korean font setup (silently)
+    print("\n🎨 Testing Korean font setup...")
+    try:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(0.5, 0.5, '한국어 폰트 테스트 (Korean Font Test)', 
+                ha='center', va='center', fontsize=14)
+        ax.set_title('폰트 테스트 | Font Test')
+        plt.close(fig)  # Close without showing
+        print("✅ Korean font setup successful!")
+    except Exception as e:
+        print(f"⚠️  Korean font setup issue: {e}")
+        print("💡 Continuing with default font - Korean characters may not display correctly")
     
     # Get configuration
     config = get_step2_config()

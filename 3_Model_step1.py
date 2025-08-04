@@ -25,7 +25,53 @@ from sklearn.metrics import mean_absolute_error, accuracy_score, classification_
 import xgboost as xgb
 from typing import Dict, List, Tuple, Optional
 import warnings
+import os
+import platform
+import matplotlib.font_manager as fm
 warnings.filterwarnings('ignore')
+
+# Configure matplotlib for non-interactive backend (no GUI needed)
+import matplotlib
+matplotlib.use('Agg')
+
+# Configure Korean font for matplotlib
+def setup_korean_font():
+    """Set up Korean font for matplotlib visualizations"""
+    system = platform.system()
+    
+    if system == "Windows":
+        # Common Korean fonts on Windows
+        korean_fonts = ['Malgun Gothic', 'NanumGothic', 'NanumBarunGothic', 'Gulim', 'Dotum']
+    elif system == "Darwin":  # macOS
+        korean_fonts = ['AppleGothic', 'NanumGothic']
+    else:  # Linux
+        korean_fonts = ['NanumGothic', 'NanumBarunGothic', 'UnDotum']
+    
+    # Try to find and set Korean font
+    available_fonts = [f.name for f in fm.fontManager.ttflist]
+    korean_font = None
+    
+    for font in korean_fonts:
+        if font in available_fonts:
+            korean_font = font
+            break
+    
+    if korean_font:
+        plt.rcParams['font.family'] = korean_font
+        print(f"✅ Korean font set: {korean_font}")
+    else:
+        # Fallback: try to use any available font that supports Korean
+        print("⚠️  Preferred Korean fonts not found. Trying fallback options...")
+        plt.rcParams['font.family'] = ['DejaVu Sans', 'Liberation Sans', 'sans-serif']
+        print("📝 Using fallback font. Korean characters may not display correctly.")
+    
+    # Ensure minus signs display correctly
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    return korean_font
+
+# Set up Korean font
+setup_korean_font()
 
 # Set style for better plots
 plt.style.use('default')
@@ -57,9 +103,54 @@ class BaselineRiskModel:
         self.predictions = {}
         self.feature_columns = None
         
+        # Create results directory
+        self.results_dir = self._create_results_directory()
+        self.korean_font = setup_korean_font()
+        
         print("🚀 Baseline Risk Model Initialized")
         print(f"📊 Target variables: {config['target_columns']}")
         print(f"🎯 Test size: {config['test_size']}")
+        print(f"📁 Results will be saved to: {self.results_dir}")
+    
+    def _create_results_directory(self) -> str:
+        """
+        Create results directory for saving outputs
+        
+        Returns:
+            Path to created results directory
+        """
+        results_dir = "result/step1_baseline"
+        
+        # Create main results directory
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Create subdirectories for different types of outputs
+        subdirs = ['visualizations', 'models', 'metrics']
+        for subdir in subdirs:
+            os.makedirs(os.path.join(results_dir, subdir), exist_ok=True)
+        
+        return results_dir
+    
+    def _save_plot(self, filename: str, dpi: int = 300, bbox_inches: str = 'tight') -> str:
+        """
+        Save current plot to results directory
+        
+        Args:
+            filename: Name of the file (without extension)
+            dpi: Resolution for PNG files
+            bbox_inches: Bounding box setting
+            
+        Returns:
+            Full path to saved file
+        """
+        # Save as PNG only
+        png_path = os.path.join(self.results_dir, 'visualizations', f"{filename}.png")
+        
+        plt.savefig(png_path, dpi=dpi, bbox_inches=bbox_inches, facecolor='white')
+        plt.close()  # Close figure to free memory
+        
+        print(f"  💾 Saved: {filename}.png")
+        return png_path
     
     def load_and_explore_data(self) -> pd.DataFrame:
         """
@@ -395,7 +486,7 @@ class BaselineRiskModel:
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
         plt.tight_layout()
-        plt.show()
+        self._save_plot("01_prediction_vs_actual")
         
         # 2. Feature Importance Analysis
         self._plot_feature_importance()
@@ -429,26 +520,28 @@ class BaselineRiskModel:
         # Get top 20 most important features
         top_features = importance_df.nlargest(20, 'avg_importance')
         
-        # Plot
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+        # Plot with improved layout for Korean text
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 12))
         fig.suptitle('Feature Importance Analysis', fontsize=16, fontweight='bold')
         
-        # Average importance
+        # Average importance (horizontal bar chart)
         top_features['avg_importance'].plot(kind='barh', ax=ax1)
         ax1.set_title('Top 20 Features - Average Importance')
         ax1.set_xlabel('Importance Score')
         
-        # Importance by target
+        # Importance by target (horizontal bar chart to avoid x-axis label overlap)
         target_cols = [col for col in top_features.columns if col != 'avg_importance']
         if target_cols:
-            top_features[target_cols].plot(kind='bar', ax=ax2)
+            # Transpose data for horizontal plotting
+            plot_data = top_features[target_cols].T
+            plot_data.plot(kind='barh', ax=ax2)
             ax2.set_title('Feature Importance by Target Variable')
-            ax2.set_ylabel('Importance Score')
-            ax2.tick_params(axis='x', rotation=45)
+            ax2.set_xlabel('Importance Score')
             ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         
-        plt.tight_layout()
-        plt.show()
+        # Adjust layout to prevent label cutoff
+        plt.subplots_adjust(bottom=0.15, left=0.1, right=0.85, top=0.9)
+        self._save_plot("02_feature_importance")
         
         # Print top features
         print(f"\n🏆 TOP 10 MOST IMPORTANT FEATURES:")
@@ -456,7 +549,7 @@ class BaselineRiskModel:
             print(f"   {i:2d}. {feature}: {importance:.4f}")
     
     def _print_performance_summary(self):
-        """Print comprehensive performance summary"""
+        """Print comprehensive performance summary and save to files"""
         if not self.predictions:
             return
             
@@ -492,6 +585,57 @@ class BaselineRiskModel:
             print(f"   • Accuracy: {data['Accuracy']}")
             print(f"   • Actual distribution: {data['True_Dist']}")
             print(f"   • Predicted distribution: {data['Pred_Dist']}")
+        
+        # Save performance summary to files
+        self._save_performance_metrics(summary_data)
+    
+    def _save_performance_metrics(self, summary_data: List[Dict]):
+        """
+        Save performance metrics to CSV and JSON files
+        
+        Args:
+            summary_data: List of performance data dictionaries
+        """
+        print("\n💾 Saving performance metrics to files...")
+        
+        # Prepare data for CSV (flatten dictionaries)
+        csv_data = []
+        for data in summary_data:
+            csv_row = {
+                'Target': data['Target'],
+                'MAE': float(data['MAE']),
+                'Accuracy': float(data['Accuracy']),
+            }
+            # Add distribution data
+            for level in [0, 1, 2, 3]:
+                csv_row[f'True_Risk_{level}'] = data['True_Dist'].get(level, 0)
+                csv_row[f'Pred_Risk_{level}'] = data['Pred_Dist'].get(level, 0)
+            csv_data.append(csv_row)
+        
+        # Save CSV
+        csv_df = pd.DataFrame(csv_data)
+        csv_path = os.path.join(self.results_dir, 'metrics', 'step1_performance_summary.csv')
+        csv_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print(f"  📊 Performance summary saved: step1_performance_summary.csv")
+        
+        # Save detailed JSON
+        json_path = os.path.join(self.results_dir, 'metrics', 'step1_detailed_results.json')
+        with open(json_path, 'w', encoding='utf-8') as f:
+            import json
+            json.dump(summary_data, f, indent=2, default=str, ensure_ascii=False)
+        print(f"  📄 Detailed results saved: step1_detailed_results.json")
+        
+        # Save model files
+        self._save_models()
+    
+    def _save_models(self):
+        """Save trained models to files"""
+        print("\n💾 Saving trained models...")
+        
+        for target_name, model in self.models.items():
+            model_path = os.path.join(self.results_dir, 'models', f'{target_name}_model.json')
+            model.save_model(model_path)
+            print(f"  🤖 Model saved: {target_name}_model.json")
     
     def run_step1_pipeline(self):
         """
@@ -520,9 +664,27 @@ class BaselineRiskModel:
             print("✅ Baseline performance established")
             print("✅ Working pipeline ready for Step 2")
             
+            # Print results summary
+            self._print_results_summary()
+            
         except Exception as e:
             print(f"\n❌ STEP 1 FAILED: {e}")
             raise
+    
+    def _print_results_summary(self):
+        """Print summary of all generated files and outputs"""
+        print(f"\n📁 RESULTS SUMMARY:")
+        print(f"   All outputs saved to: {self.results_dir}")
+        print(f"   📊 Visualizations:")
+        print(f"      • 01_prediction_vs_actual.png")
+        print(f"      • 02_feature_importance.png")
+        print(f"   📈 Metrics:")
+        print(f"      • step1_performance_summary.csv")
+        print(f"      • step1_detailed_results.json")
+        print(f"   🤖 Models:")
+        for target in self.config['target_columns']:
+            print(f"      • {target}_model.json")
+        print(f"\n💡 Use these files for offline analysis and reporting!")
 
 
 def get_step1_config():
