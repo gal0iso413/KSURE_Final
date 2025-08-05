@@ -70,7 +70,7 @@ class AdvancedImbalanceModel:
         self.best_approach = None
         
         # Create results directory
-        self.results_dir = 'result/step5_advanced'
+        self.results_dir = 'result/step5-2_advanced'
         self._create_results_directory()
         
     def _create_results_directory(self):

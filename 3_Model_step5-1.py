@@ -62,7 +62,7 @@ class QuickWinsImbalanceModel:
         self.best_approach = None
         
         # Create results directory
-        self.results_dir = 'result/step5_quick_wins'
+        self.results_dir = 'result/step5-1_quick_wins'
         self._create_results_directory()
         
     def _create_results_directory(self):
