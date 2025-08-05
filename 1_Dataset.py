@@ -91,12 +91,12 @@ class DatasetCreator:
         """
         Join future risk outcomes for Year1-4 predictions
         
-        NEW LOGIC (Clean & Consistent):
-        - For each contract, look forward N years (cumulative windows)
+        NEW LOGIC (Individual Years):
+        - For each contract, look at individual years (non-cumulative windows)
         - Year1: risks overlapping [contract_date, contract_date + 1 year]
-        - Year2: risks overlapping [contract_date, contract_date + 2 years]
-        - Year3: risks overlapping [contract_date, contract_date + 3 years]
-        - Year4: risks overlapping [contract_date, contract_date + 4 years]
+        - Year2: risks overlapping [contract_date + 1 year, contract_date + 2 years]
+        - Year3: risks overlapping [contract_date + 2 years, contract_date + 3 years]
+        - Year4: risks overlapping [contract_date + 3 years, contract_date + 4 years]
         
         Risk Assignment Rules:
         - ALL risk levels (0,1,2,3) require COMPLETE prediction periods
@@ -146,8 +146,8 @@ class DatasetCreator:
                     contract_date = row[contract_date_col]
                     risk_id = row[base_risk_id_col]
                     
-                    # Define cumulative prediction window (Year N = total N years from contract date)
-                    prediction_window_start = contract_date
+                    # Define individual prediction window (Year N = specific year N from contract date)
+                    prediction_window_start = contract_date + timedelta(days=365 * (year - 1))
                     prediction_window_end = contract_date + timedelta(days=365 * year)
                     
                     # Check if prediction period has completed (enough time has passed)
