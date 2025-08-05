@@ -383,6 +383,13 @@ print("✅ Dataset ready for XGBoost!")
 - `risk_year3`: Maximum risk in first 3 years after contract (cumulative)
 - `risk_year4`: Maximum risk in first 4 years after contract (cumulative)
 
+**Risk Assignment Logic:**
+- **0**: Complete prediction period with no risk events observed
+- **1,2,3**: Complete prediction period with risk events (max level observed)
+- **NaN**: Prediction period not completed yet (insufficient time passed)
+
+*All risk levels require complete prediction periods for fair comparison.*
+
 ### X Variables (Features)
 Feature naming: `{data_type}_{variable}_{time_period}`
 

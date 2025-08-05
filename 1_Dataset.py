@@ -91,14 +91,20 @@ class DatasetCreator:
         """
         Join future risk outcomes for Year1-4 predictions
         
-        Logic:
+        NEW LOGIC (Clean & Consistent):
         - For each contract, look forward N years (cumulative windows)
         - Year1: risks overlapping [contract_date, contract_date + 1 year]
         - Year2: risks overlapping [contract_date, contract_date + 2 years]
         - Year3: risks overlapping [contract_date, contract_date + 3 years]
         - Year4: risks overlapping [contract_date, contract_date + 4 years]
-        - Find maximum risk level across all overlapping risk periods
-        - 0 = no risk observed, NaN = insufficient data coverage
+        
+        Risk Assignment Rules:
+        - ALL risk levels (0,1,2,3) require COMPLETE prediction periods
+        - NaN = prediction period not completed yet (insufficient time passed)
+        - 0 = complete period with no risk events observed
+        - 1,2,3 = complete period with risk events (max risk level observed)
+        
+        This ensures fair comparison and prevents temporal bias.
         """
         print("\n2️⃣ Joining Y Variables (Future Risk)")
         print("-" * 40)
@@ -144,37 +150,40 @@ class DatasetCreator:
                     prediction_window_start = contract_date
                     prediction_window_end = contract_date + timedelta(days=365 * year)
                     
-                    # Find risks that overlap with this prediction window
-                    # Overlap logic: risk_start < window_end AND risk_end > window_start
-                    firm_risks = risk_data[
-                        (risk_data[risk_firm_id_col] == risk_id) &
-                        (risk_data[risk_start_date_col] < prediction_window_end) &
-                        (risk_data[risk_end_date_col] > prediction_window_start)
-                    ]
-                    
-                    if len(firm_risks) > 0:
-                        # Max risk level in this period
-                        max_risk = firm_risks[risk_level_col].max()
-                        year_risks.append(max_risk)
+                    # Check if prediction period has completed (enough time has passed)
+                    # current date = 20250630
+                    current_date = datetime(2025,6,30).date()
+                    if isinstance(contract_date, pd.Timestamp):
+                        contract_date_only = contract_date.date()
                     else:
-                        # No overlapping risks found
-                        # Check if prediction period has completed (enough time has passed)
-                        # current date = 20250630
-                        current_date = datetime(2025,6,30).date()
-                        if isinstance(contract_date, pd.Timestamp):
-                            contract_date_only = contract_date.date()
-                        else:
-                            contract_date_only = contract_date
+                        contract_date_only = contract_date
+                    
+                    if isinstance(prediction_window_end, pd.Timestamp):
+                        prediction_end_date = prediction_window_end.date()
+                    else:
+                        prediction_end_date = prediction_window_end
+                    
+                    # NEW LOGIC: All risk levels require complete prediction periods
+                    if prediction_end_date > current_date:
+                        # Prediction period not completed yet - assign NaN for all cases
+                        year_risks.append(np.nan)
+                    else:
+                        # Prediction period is complete - now check for risk events
+                        # Find risks that overlap with this prediction window
+                        # Overlap logic: risk_start < window_end AND risk_end > window_start
+                        firm_risks = risk_data[
+                            (risk_data[risk_firm_id_col] == risk_id) &
+                            (risk_data[risk_start_date_col] < prediction_window_end) &
+                            (risk_data[risk_end_date_col] > prediction_window_start)
+                        ]
                         
-                        if isinstance(prediction_window_end, pd.Timestamp):
-                            prediction_end_date = prediction_window_end.date()
+                        if len(firm_risks) > 0:
+                            # Risk events found in complete period - assign max risk level
+                            max_risk = firm_risks[risk_level_col].max()
+                            year_risks.append(max_risk)
                         else:
-                            prediction_end_date = prediction_window_end
-                        
-                        if prediction_end_date > current_date:
-                            year_risks.append(np.nan)  # Prediction period not completed yet
-                        else:
-                            year_risks.append(0)  # No risk observed in completed period
+                            # No risk events in complete period - assign 0
+                            year_risks.append(0)
                 
                 result_df[f'risk_year{year}'] = year_risks
                 risk_count = sum(1 for x in year_risks if not pd.isna(x) and x > 0)

@@ -154,18 +154,27 @@ class TemporalSplitModel:
             # Temporal column analysis
             temporal_col = self.config['temporal_column']
             if temporal_col in self.data.columns:
-                self.data[temporal_col] = pd.to_datetime(self.data[temporal_col], format='%Y-%m-%d')
+                # Convert to datetime with error handling
+                self.data[temporal_col] = pd.to_datetime(self.data[temporal_col], errors='coerce')
+                
+                # Remove records with invalid dates
+                invalid_dates = self.data[temporal_col].isna().sum()
+                if invalid_dates > 0:
+                    print(f"   ⚠️  Invalid date format found. Removing {invalid_dates} records.")
+                    self.data.dropna(subset=[temporal_col], inplace=True)
+                
                 print(f"\n📅 Temporal analysis:")
                 print(f"   • Temporal column: {temporal_col}")
                 print(f"   • Date range: {self.data[temporal_col].min()} to {self.data[temporal_col].max()}")
                 print(f"   • Total days: {(self.data[temporal_col].max() - self.data[temporal_col].min()).days}")
+                print(f"   • Final records after cleaning: {len(self.data):,}")
                 
-                # Check for missing temporal data
+                # Verify no missing temporal data after cleaning
                 missing_temporal = self.data[temporal_col].isna().sum()
                 if missing_temporal > 0:
-                    print(f"   ⚠️  Missing temporal data: {missing_temporal} records")
+                    print(f"   ❌ Still have missing temporal data: {missing_temporal} records")
                 else:
-                    print(f"   ✅ No missing temporal data")
+                    print(f"   ✅ No missing temporal data after cleaning")
             else:
                 raise ValueError(f"Temporal column '{temporal_col}' not found in dataset")
             
@@ -178,6 +187,7 @@ class TemporalSplitModel:
     def implement_temporal_split(self) -> Tuple[pd.DataFrame, pd.DataFrame, Dict, Dict]:
         """
         Implement simple temporal train/test split using chronological ordering
+        with proper cutoff dates to ensure complete prediction periods
         
         Returns:
             Tuple of (X_train, X_test, y_train_dict, y_test_dict)
@@ -190,29 +200,63 @@ class TemporalSplitModel:
         temporal_col = self.config['temporal_column']
         self.data = self.data.sort_values(temporal_col).reset_index(drop=True)
         
-        # Simple chronological split
-        train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(self.data) * train_ratio)
+        # Convert temporal column to datetime if needed
+        if not pd.api.types.is_datetime64_any_dtype(self.data[temporal_col]):
+            self.data[temporal_col] = pd.to_datetime(self.data[temporal_col])
         
-        print(f"📊 Simple temporal split details:")
-        print(f"   • Total records: {len(self.data):,}")
-        print(f"   • Train records: {train_size:,} ({train_size/len(self.data):.1%})")
-        print(f"   • Test records: {len(self.data) - train_size:,} ({(len(self.data) - train_size)/len(self.data):.1%})")
+        # Define cutoff dates for complete prediction periods
+        # Current date: 2025-06-30 (as per dataset logic)
+        current_date = pd.Timestamp('2025-06-30')
+        
+        # Calculate cutoff dates for each risk year
+        # To have complete 4-year prediction, need contracts from 2021-06-30 or earlier
+        cutoff_dates = {
+            'risk_year1': current_date - pd.DateOffset(years=1),  # 2024-06-30
+            'risk_year2': current_date - pd.DateOffset(years=2),  # 2023-06-30  
+            'risk_year3': current_date - pd.DateOffset(years=3),  # 2022-06-30
+            'risk_year4': current_date - pd.DateOffset(years=4)   # 2021-06-30
+        }
+        
+        print(f"📊 Temporal split configuration:")
+        print(f"   • Current date: {current_date.strftime('%Y-%m-%d')}")
+        print(f"   • Cutoff dates for complete prediction periods:")
+        for target, cutoff in cutoff_dates.items():
+            print(f"     - {target}: {cutoff.strftime('%Y-%m-%d')}")
+        
+        # Use the most restrictive cutoff (risk_year4) for the main split
+        # This ensures all models have complete data
+        main_cutoff = cutoff_dates['risk_year4']  # 2021-06-30
+        
+        # Filter data to only include contracts before the cutoff
+        valid_data = self.data[self.data[temporal_col] <= main_cutoff].copy()
+        
+        print(f"\n📊 Data filtering results:")
+        print(f"   • Original data: {len(self.data):,} records")
+        print(f"   • Valid data (before {main_cutoff.strftime('%Y-%m-%d')}): {len(valid_data):,} records")
+        print(f"   • Excluded data: {len(self.data) - len(valid_data):,} records")
+        
+        # Simple chronological 80/20 split on valid data
+        train_ratio = self.config.get('train_ratio', 0.8)
+        train_size = int(len(valid_data) * train_ratio)
+        
+        print(f"\n📊 Temporal split details:")
+        print(f"   • Train records: {train_size:,} ({train_size/len(valid_data):.1%})")
+        print(f"   • Test records: {len(valid_data) - train_size:,} ({(len(valid_data) - train_size)/len(valid_data):.1%})")
         
         # Get the actual split date for reporting
-        self.split_date = self.data.iloc[train_size-1][temporal_col]
-        print(f"   • Split date: {self.split_date}")
+        self.split_date = valid_data.iloc[train_size-1][temporal_col]
+        print(f"   • Split date: {self.split_date.strftime('%Y-%m-%d')}")
         
         # Split data
-        train_data = self.data.iloc[:train_size].copy()
-        test_data = self.data.iloc[train_size:].copy()
+        train_data = valid_data.iloc[:train_size].copy()
+        test_data = valid_data.iloc[train_size:].copy()
         
         # Separate features and targets
         exclude_cols = self.config.get('exclude_columns', [])
         target_cols = self.config['target_columns']
         
         # Feature columns (exclude targets, excluded columns, and temporal column)
-        feature_cols = [col for col in self.data.columns 
+        feature_cols = [col for col in valid_data.columns 
                        if col not in target_cols and col not in exclude_cols and col != temporal_col]
         
         print(f"\n📊 Feature analysis:")
@@ -252,7 +296,8 @@ class TemporalSplitModel:
                 'train_missing': train_total - train_available,
                 'test_total': test_total,
                 'test_available': test_available,
-                'test_missing': test_total - test_available
+                'test_missing': test_total - test_available,
+                'cutoff_date': cutoff_dates[target].strftime('%Y-%m-%d')
             }
         
         self.X_train = X_train
@@ -419,33 +464,54 @@ class TemporalSplitModel:
         # 3. Performance metrics visualization
         self._plot_performance_metrics()
         
-        # 4. Temporal drift analysis
-        self._plot_temporal_drift()
+        # 4. Data availability analysis (removed - not needed)
     
     def _plot_temporal_split(self):
-        """Visualize the temporal split"""
+        """Visualize the temporal split with proper cutoff dates and total data distribution"""
         temporal_col = self.config['temporal_column']
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
-        # Calculate split indices
+        # Get the valid data that was used for the split
+        current_date = pd.Timestamp('2025-06-30')
+        main_cutoff = current_date - pd.DateOffset(years=4)  # 2021-06-30
+        valid_data = self.data[self.data[temporal_col] <= main_cutoff].copy()
+        
+        # Calculate split indices for valid data
         train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(self.data) * train_ratio)
+        train_size = int(len(valid_data) * train_ratio)
         
-        # Plot 1: Date distribution
-        train_dates = self.data.iloc[:train_size][temporal_col]
-        test_dates = self.data.iloc[train_size:][temporal_col]
+        # Plot 1: Complete data distribution with cutoff and split lines
+        # Create unified monthly bins for consistent visualization
+        all_dates = self.data[temporal_col]
+        bins = pd.date_range(start=all_dates.min().to_period('M').start_time, 
+                            end=all_dates.max().to_period('M').end_time + pd.offsets.MonthEnd(1), 
+                            freq='M')
         
-        ax1.hist(train_dates, bins=50, alpha=0.7, label='Train Set', color='blue')
-        ax1.hist(test_dates, bins=50, alpha=0.7, label='Test Set', color='red')
-        ax1.axvline(self.split_date, color='black', linestyle='--', label=f'Split Date: {self.split_date}')
-        ax1.set_title('Temporal Train/Test Split Distribution', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Date')
+        # Show total data distribution (including excluded data)
+        ax1.hist(all_dates, bins=bins, alpha=0.3, label='Total Data (Including Excluded)', 
+                color='gray', edgecolor='black', linewidth=0.5)
+        
+        # Show valid data distribution
+        train_dates = valid_data.iloc[:train_size][temporal_col]
+        test_dates = valid_data.iloc[train_size:][temporal_col]
+        
+        ax1.hist(train_dates, bins=bins, alpha=0.7, label='Train Set (Valid Data)', color='blue')
+        ax1.hist(test_dates, bins=bins, alpha=0.7, label='Test Set (Valid Data)', color='red')
+        
+        # Add cutoff and split lines
+        ax1.axvline(self.split_date, color='black', linestyle='--', linewidth=2,
+                   label=f'Split Date: {self.split_date.strftime("%Y-%m-%d")}')
+        ax1.axvline(main_cutoff, color='red', linestyle=':', linewidth=3,
+                   label=f'Cutoff Date: {main_cutoff.strftime("%Y-%m-%d")} (4-year prediction)')
+        
+        ax1.set_title('Complete Data Distribution with Temporal Split', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Contract Date')
         ax1.set_ylabel('Number of Contracts')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # Plot 2: Monthly distribution
+        # Plot 2: Monthly distribution (valid data only)
         train_monthly = train_dates.dt.to_period('M').value_counts().sort_index()
         test_monthly = test_dates.dt.to_period('M').value_counts().sort_index()
         
@@ -453,7 +519,7 @@ class TemporalSplitModel:
                 marker='o', label='Train Set', color='blue')
         ax2.plot(test_monthly.index.astype(str), test_monthly.values, 
                 marker='s', label='Test Set', color='red')
-        ax2.set_title('Monthly Contract Distribution', fontsize=14, fontweight='bold')
+        ax2.set_title('Monthly Contract Distribution (Valid Data Only)', fontsize=14, fontweight='bold')
         ax2.set_xlabel('Month')
         ax2.set_ylabel('Number of Contracts')
         ax2.legend()
@@ -541,38 +607,7 @@ class TemporalSplitModel:
         plt.tight_layout()
         self._save_plot("03_performance_metrics")
     
-    def _plot_temporal_drift(self):
-        """Analyze temporal drift within test set"""
-        temporal_col = self.config['temporal_column']
-        
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('Temporal Drift Analysis in Test Set', fontsize=16, fontweight='bold')
-        
-        # Calculate split indices
-        train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(self.data) * train_ratio)
-        
-        test_data = self.data.iloc[train_size:].copy()
-        
-        for i, target in enumerate(self.config['target_columns'][:4]):  # Limit to 4 plots
-            ax = axes[i//2, i%2]
-            
-            if target in test_data.columns:
-                # Group by month and calculate average risk
-                test_data['month'] = test_data[temporal_col].dt.to_period('M')
-                monthly_risk = test_data.groupby('month')[target].agg(['mean', 'count']).reset_index()
-                
-                if len(monthly_risk) > 1:
-                    ax.plot(monthly_risk['month'].astype(str), monthly_risk['mean'], 
-                           marker='o', linewidth=2, markersize=6)
-                    ax.set_title(f'{target} - Monthly Average Risk', fontsize=12, fontweight='bold')
-                    ax.set_xlabel('Month')
-                    ax.set_ylabel('Average Risk Level')
-                    ax.grid(True, alpha=0.3)
-                    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
-        
-        plt.tight_layout()
-        self._save_plot("04_temporal_drift")
+
     
     def _print_performance_summary(self):
         """Print comprehensive performance summary"""
@@ -693,7 +728,7 @@ class TemporalSplitModel:
         print(f"      • 01_temporal_split.png")
         print(f"      • 02_target_distributions.png")
         print(f"      • 03_performance_metrics.png")
-        print(f"      • 04_temporal_drift.png")
+
         print(f"   📈 Metrics:")
         print(f"      • step4_detailed_results.json")
         print(f"   🤖 Models:")
