@@ -1,134 +1,132 @@
 ## **Final Revised Plan: XGBoost Risk Prediction Model Development**
 
-### **Phase 1: Foundation & Understanding** ✅ *COMPLETED*
+### IMPORTANT: DONT change any name be yourself. Try to leave as it was.
+### IMPORTANT: KOREAN FONT is needed for visualization. Don't remove that part.
 
-**Step 1: Simple Baseline Model** ✅
+### **Phase 1: Foundation & Understanding**
+
+**Step 1: Simple Baseline Model**
 - Load data from 1_Dataset.py output
 - Basic data exploration (shape, missing values, target distribution)
 - Create simplest possible XGBoost model with default parameters
 - Use simple train/test split (80/20) without considering dates
 - *Goal: Establish working pipeline and baseline performance*
 
-**Step 2: Basic Evaluation Framework** ✅
+**Step 2: Basic Evaluation Framework**
 - Implement proper multi-class evaluation metrics
 - Create confusion matrix visualization
 - Document baseline performance for comparison
 - *Goal: Understand current model performance*
 
-**Step 3: Comprehensive Exploratory Data Analysis (EDA)** ✅
+**Step 3: Comprehensive Exploratory Data Analysis (EDA)**
 - **Data Quality Analysis**: Missing patterns, outliers, data types
-- **Temporal Patterns**: Distribution changes over time, seasonality
-- **Target Variable Analysis**: Class distribution over time, business cycles impact
+- **Target Variable Analysis**: Class distribution over time
 - **Feature Relationships**: Correlation analysis, feature distributions by target class
-- **Business Logic Validation**: Do the data patterns make business sense?
-- **Data Leakage Investigation**: Identify potentially problematic features
 - *Goal: Deep understanding of data characteristics to inform all subsequent decisions*
 
-### **Phase 2: Data Strategy** ✅ *COMPLETED*
+### **Phase 2: Feature Engineering & Selection**
 
-**Step 4: Temporal Train/Test Split** ✅
-- Implement date-based splitting using insights from EDA
-- Analyze temporal distribution patterns discovered in Step 3
-- *Goal: Ensure model can predict future cases*
+**Step 4: Feature Refinement and Selection**
+- **Multicollinearity Removal**: Remove highly correlated features (>0.9-0.95 threshold)
+- **Variance Threshold**: Remove near-zero variance features (<0.001)
+- **Missing Value Threshold**: Remove features with >50% missing values
+- **XGBoost Feature Importance**: Keep top 50-60% most important features
+- *Goal: Clean, focused feature set optimized for XGBoost performance through systematic reduction*
 
-**Step 5: Class Imbalance Strategy** ✅
-- Apply imbalance handling methods based on EDA findings
-- Use temporal patterns to inform resampling strategies
-- **Selected Default Strategy**: SMOTEENN (F1-macro: 0.272, high-risk recall: 0.143)
-- **Backup Strategy**: FocalLoss (F1-macro: 0.290, preserves temporal structure)
-- *Goal: Address data imbalance systematically*
+### **Phase 3: Temporal Validation Strategy**
 
-### **Phase 3: Model Architecture Experiments** 🔄 *CURRENT PHASE*
+**Step 5: Unified Temporal Validation**
+- **Approach 1**: Random Split (shuffle=True) - Performance baseline ignoring temporal characteristics
+- **Approach 2**: Stratified Random Split (shuffle=True, stratify=y) - Baseline with class balance
+- **Approach 3**: Simple Temporal Holdout (shuffle=False) - Basic temporal validation (past vs future)
+- **Approach 4**: Expanding Window CV - Evaluates stability as more data accumulates over time
+- **Approach 5**: Rolling Window CV - Evaluates adaptation to recent trends by discarding old data
+- **Data Sorting**: Critical sorting by 보험청약일자 before temporal validation
+- **Inconsistent Parameters**: Different split ratios and fold counts for all targets
+- **Multi-Target Analysis**: Tested across risk_year1, risk_year2, risk_year3, risk_year4
+- *Goal: Establish the most reliable temporal validation approach*
 
-**Step 6: Model Architecture Experiments** ⭐ *NEW APPROACH*
-- **Unified vs. Individual Models**: Test single model for all years vs. separate models per year
-- **Classification vs. Regression**: Compare ordinal classification vs. regression approaches
-- **Ensemble Architectures**: Test bagging, boosting, and stacking combinations
-- **Temporal Model Variants**: Implement time-aware model architectures
-- **Default Imbalance Strategy**: SMOTEENN (from Step 5-2 Advanced results)
-- **Evaluation Focus**: High-risk recall (target: 15-25%), F1-macro, temporal stability
-- *Goal: Find optimal model architecture before feature engineering*
+### **Phase 4: Class Imbalance Strategy**
 
-### **Phase 4: Advanced Validation & Feature Engineering**
+**Step 6: Class Imbalance Strategy**
+- **Apply to Optimized Features**: Use best feature set from Step 4 (27 features)
+- **Use Rolling Window CV**: From Step 5 for temporal robustness
+- **Phase 1 - Enhanced Evaluation**: Balanced Accuracy, Cohen's Kappa, Macro F1, High-Risk Recall, Classification Reports; per-fold class prevalence logging
+- **Phase 2 - Algorithm-Level Reweighting**: Class-Balanced (Effective Number of Samples) weights; optional focal loss fallback; prior correction at inference
+- **Phase 3 - Balanced Bagging Ensemble**: Train M submodels per fold with controlled undersampling of class 0 + class-balanced weights; average probabilities
+- **Phase 4 - Calibration + Business Thresholds**: Per-class Platt calibration on temporal split; optimize thresholds in business priority order (3→2→1→0)
+- **Phase 5 - Ordinal Alternative**: Train K−1 cumulative ordinal models; compare against multiclass ensemble
+- **Phase 6 - Selection Policy**: Select best strategy per target (risk_year1-4) prioritizing high-risk recall with stability guard (mean F1 − std F1)
+- **Temporal Integrity**: Preserve original temporal distribution; no synthetic sampling
+- **Multi-Target Analysis**: Test across risk_year1-4 with varying class distributions
+- **Business Focus**: Prioritize high-risk recall (classes 2-3) for business alignment
+- *Goal: Address data imbalance with temporally robust validation and business-optimized thresholds*
 
-**Step 7: Time Series Cross-Validation** ⭐ *ENHANCED*
-- Implement proper time series CV respecting temporal dependencies
-- Test different CV strategies (expanding window, rolling window)
-- Validate model stability across different time periods
-- **Use Best Architecture**: From Step 6 results
-- **Imbalance Strategy**: SMOTEENN for training, FocalLoss for validation scenarios
-- *Goal: Ensure robust temporal performance*
+### **Phase 5: Model Architecture Experiments**
 
-**Step 8: EDA-Informed Feature Engineering & Selection**
-- Apply feature selection based on EDA insights (Step 3)
-- Address multicollinearity (43 high correlations identified)
-- Create temporal features based on business cycles
-- Remove problematic features identified in EDA
-- **Use Best Architecture**: From Step 6 results
-- **Use Best CV Strategy**: From Step 7 results
-- *Goal: Optimize feature set for selected architecture*
+**Step 7: Model Architecture Experiments**
+- **Phase 1 - Unified vs. Individual Models**: Test single model for all years vs. separate models per year
+- **Phase 2 - Classification vs. Regression**: Compare classification vs. regression approaches
+- **Phase 3 - Ordinal vs. No Ordinal**: Compare cost-sensitive ordinal classification vs. standard classification
+- **Use Optimized Features**: From Step 4 results (27 features)
+- **Use Rolling Window CV**: From Step 5 for temporal robustness
+- **Use Enhanced Sample Weights**: From Step 6 results (cost-based ordinal weights)
+- **Evaluation Focus**: High-risk recall, F1-macro, temporal stability
+- **Efficient Training**: Reuse results from previous phases to avoid duplicate training
+- *Goal: Find optimal model architecture with comprehensive optimal setup*
 
-### **Phase 5: Model Optimization**
+### **Phase 6: Model Optimization**
 
-**Step 9: Hyperparameter Tuning with Optuna**
-- Define search space based on selected architecture (Step 6)
-- Use temporal CV strategy (Step 7)
-- Optimize for high-risk recall (15-25% target)
-- **Use Best Architecture**: From Step 6 results
-- **Use Best Features**: From Step 8 results
-- **Use Best CV Strategy**: From Step 7 results
+**Step 8: Hyperparameter Tuning with Optuna**
+- Define search space based on selected architecture (Step 7)
+- Use selected temporal validation strategy (Step 5)
+- Optimize for high-risk recall
+- **Use Best Architecture**: From Step 7 results
+- **Use Optimized Features**: From Step 4 results
+- **Use Selected Validation**: From Step 5 results
+- **Use Best Imbalance Strategy**: From Step 6 results
 - *Goal: Find optimal model configuration*
 
-### **Phase 6: Analysis & Interpretation**
+### **Phase 7: Analysis & Interpretation**
 
-**Step 10: Feature Importance & Interpretability**
+**Step 9: Feature Importance & Interpretability**
 - Generate SHAP values for selected architecture
 - Provide business interpretations of feature importance
 - Analyze temporal feature importance patterns
-- **Use Final Model**: From Step 9 results
+- **Use Final Model**: From Step 8 results
 - *Goal: Provide explainable predictions*
 
-**Step 11: Comprehensive Visualization**
+**Step 10: Comprehensive Visualization**
 - Create business-focused visualizations
 - Temporal performance analysis
 - Risk prediction patterns over time
-- **Use Final Model**: From Step 9 results
+- **Use Final Model**: From Step 8 results
 - *Goal: Generate actionable insights*
 
-### **Phase 7: Validation & Documentation**
+### **Phase 8: Validation & Documentation**
 
-**Step 12: Model Validation & Testing**
+**Step 11: Model Validation & Testing**
 - Test across multiple periods using temporal CV
 - Validate business assumptions
 - Performance degradation analysis over time
-- **Use Final Model**: From Step 9 results
+- **Use Final Model**: From Step 8 results
 - *Goal: Ensure production readiness*
 
-**Step 13: Final Documentation & Deployment Prep**
+**Step 12: Final Documentation & Deployment Prep**
 - Document limitations and recommendations
 - Model deployment specifications
 - Monitoring and maintenance guidelines
-- **Use Final Model**: From Step 9 results
+- **Use Final Model**: From Step 8 results
 - *Goal: Deliver production-ready model*
 
 ---
 
 ## **Key Strategic Decisions Made:**
 
-### **Imbalance Strategy Selection:**
-- **Primary**: SMOTEENN (from Step 5-2 Advanced)
-  - F1-macro: 0.272
-  - High-risk recall: 0.143 (closest to 15-25% target)
-  - Combines SMOTE with Edited Nearest Neighbors
-- **Backup**: FocalLoss (from Step 5-1 Quick Wins)
-  - F1-macro: 0.290
-  - No data manipulation, preserves temporal structure
-  - Better for temporal validation scenarios
-
-### **Architecture-First Approach:**
-- **Rationale**: Current baseline model (F1-macro: 0.242) is fundamentally limited
-- **Strategy**: Fix architecture before feature engineering and hyperparameter tuning
-- **Expected Outcome**: More robust foundation for subsequent optimizations
+### **Feature-First Approach:**
+- **Rationale**: Optimal features are foundation for all subsequent steps
+- **Strategy**: Feature engineering → Temporal validation → Imbalance → Architecture → Hyperparameters
+- **Expected Outcome**: Each step builds on optimized foundation from previous steps
 
 ### **Temporal Focus:**
 - **Priority**: Time series cross-validation and temporal model architectures
@@ -136,6 +134,6 @@
 - **Validation**: Multiple time periods to ensure model robustness
 
 ### **Performance Targets:**
-- **High-Risk Recall**: 15-25% (business critical)
+- **High-Risk Recall**: 2~3 is the most important risk
 - **F1-Macro**: Maximize while maintaining high-risk performance
 - **Temporal Stability**: Consistent performance across time periods

@@ -1,56 +1,48 @@
 """
-XGBoost Risk Prediction Model - Step 4: Temporal Train/Test Split
-============================================================
+XGBoost Risk Prediction Model - Step 4: Feature Refinement and Selection
+=======================================================================
 
-Step 4 Implementation:
-- Load data from 1_Dataset.py output
-- Implement temporal train/test split using 보험청약일자
-- Use chronological 80/20 split (no shuffling)
-- Train 4 separate XGBoost models with temporal awareness
-- Goal: Prevent temporal leakage and ensure realistic evaluation
+Step 4 Implementation - SIMPLIFIED 4-STEP APPROACH:
+1. Correlation analysis (>0.9 threshold, configurable)
+2. Variance threshold (remove <0.001 variance, configurable)
+3. Missing value patterns (remove >50% missing, configurable)
+4. XGBoost feature importance (keep top 50-60%, configurable)
 
-Design Decisions:
-- Temporal Split: Sort by 보험청약일자, use first 80% for training, last 20% for testing
-- 4 Separate Models: One for each risk_year (1,2,3,4)
-- Regression with Rounding: Treat as continuous then round to preserve ordinality
-- Native Missing Handling: Let XGBoost handle missing X variables
-- Target-Specific Filtering: Each model uses only rows with valid data for its specific target
-- Simple Date-Based Split: Use all data chronologically, let XGBoost handle missing targets naturally
+Design Focus:
+- Clean, simple implementation
+- Essential reduction steps only
+- Preserve exclude columns and dataset creation
+- Generate comparison visualizations (diagnostics only)
 """
 
 import pandas as pd
 import numpy as np
+import xgboost as xgb
+import json
+import os
+from datetime import datetime
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import mean_absolute_error, accuracy_score, classification_report, confusion_matrix
-import xgboost as xgb
-from typing import Dict, List, Tuple, Optional
-import warnings
-import os
-import platform
 import matplotlib.font_manager as fm
-import json
-from datetime import datetime
+import platform
+import warnings
 warnings.filterwarnings('ignore')
 
-# Configure matplotlib for non-interactive backend (no GUI needed)
-import matplotlib
-matplotlib.use('Agg')
-
-# Configure Korean font for matplotlib
+# Configure matplotlib for Korean fonts
 def setup_korean_font():
     """Set up Korean font for matplotlib visualizations"""
     system = platform.system()
     
     if system == "Windows":
-        # Common Korean fonts on Windows
         korean_fonts = ['Malgun Gothic', 'NanumGothic', 'NanumBarunGothic', 'Gulim', 'Dotum']
     elif system == "Darwin":  # macOS
         korean_fonts = ['AppleGothic', 'NanumGothic']
     else:  # Linux
         korean_fonts = ['NanumGothic', 'NanumBarunGothic', 'UnDotum']
     
-    # Try to find and set Korean font
     available_fonts = [f.name for f in fm.fontManager.ttflist]
     korean_font = None
     
@@ -61,723 +53,618 @@ def setup_korean_font():
     
     if korean_font:
         plt.rcParams['font.family'] = korean_font
-        print(f"✅ Korean font set: {korean_font}")
     else:
-        # Fallback: try to use any available font that supports Korean
-        print("⚠️  Preferred Korean fonts not found. Trying fallback options...")
         plt.rcParams['font.family'] = ['DejaVu Sans', 'Liberation Sans', 'sans-serif']
-        print("📝 Using fallback font. Korean characters may not display correctly.")
     
-    # Ensure minus signs display correctly
     plt.rcParams['axes.unicode_minus'] = False
-    
     return korean_font
 
-# Set up Korean font
+# Set up visualization
 setup_korean_font()
-
-# Set style for better plots
 plt.style.use('default')
 sns.set_palette("husl")
 
+def load_data():
+    """Load and prepare data"""
+    print("🚀 FEATURE REDUCTION PIPELINE")
+    print("=" * 50)
+    print("📂 Loading Dataset")
+    print("-" * 30)
+    
+    # Load dataset
+    df = pd.read_csv('dataset/credit_risk_dataset.csv')
+    print(f"✅ Dataset loaded: {df.shape}")
+    
+    # Define exclude columns (matching step3.py)
+    exclude_cols = [
+        '사업자등록번호', '대상자명', '대상자등록이력일시', '대상자기본주소',
+        '청약번호', '보험청약일자', '청약상태코드', '수출자대상자번호', 
+        '특별출연협약코드', '업종코드1'
+    ]
+    
+    # Separate features and targets
+    target_cols = [col for col in df.columns if col.startswith('risk_year')]
+    feature_cols = [col for col in df.columns if col not in target_cols + exclude_cols]
+    
+    print(f"📋 Excluded columns: {len(exclude_cols)}")
+    print(f"🎯 Target columns: {len(target_cols)}")
+    print(f"📊 Features: {len(feature_cols)}")
+    
+    X = df[feature_cols]
+    y = df[target_cols]
+    
+    return df, X, y, exclude_cols, target_cols
 
-class TemporalSplitModel:
+def audit_non_numeric_columns(X: pd.DataFrame, exclude_cols: list):
+    """Identify non-numeric columns that are not part of exclude columns.
+
+    These columns will be appended back for diagnostics only and should never be
+    used during model training. We surface them so potential leakage can be audited.
     """
-    Step 4: Temporal Train/Test Split XGBoost Model for Risk Prediction
+    non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
+    non_numeric_outside_exclude = [c for c in non_numeric_cols if c not in exclude_cols]
+
+    if non_numeric_outside_exclude:
+        print("⚠️ Non-numeric columns outside exclude list (diagnostics only, do not train with these):")
+        for c in non_numeric_outside_exclude:
+            print(f"   • {c}")
+    else:
+        print("✅ All non-numeric columns are within exclude list or none present in features")
+
+    return non_numeric_outside_exclude
+
+def step1_remove_high_correlation(X, threshold=0.9):
+    """Step 1: Remove highly correlated features"""
+    print(f"\n📊 Step 1: Correlation Analysis (>{threshold} threshold)")
+    print("-" * 40)
     
-    Implements temporal-aware train/test split using 보험청약일자 to prevent
-    temporal leakage and ensure realistic evaluation of future predictions.
-    """
+    initial_features = len(X.columns)
     
-    def __init__(self, config: Dict):
-        """
-        Initialize temporal split model with configuration
-        
-        Args:
-            config: Dictionary containing model configuration
-        """
-        self.config = config
-        self.data = None
-        self.X_train = None
-        self.X_test = None
-        self.y_train = {}
-        self.y_test = {}
-        self.models = {}
-        self.results_dir = None
-        self.split_date = None
-        self.temporal_stats = {}
-        
-        print("🔍 Temporal Split Model Initialized")
-        print(f"📅 Temporal reference: {config.get('temporal_column', '보험청약일자')}")
-        print(f"📊 Split ratio: {config.get('train_ratio', 0.8):.1%} train / {1-config.get('train_ratio', 0.8):.1%} test")
+    # Get only numeric columns for correlation
+    numeric_cols = X.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) == 0:
+        print("⚠️ No numeric features for correlation analysis")
+        return X
     
-    def _create_results_directory(self) -> str:
-        """Create results directory for Step 4 outputs"""
-        results_dir = "result/step4_temporal_split"
-        os.makedirs(results_dir, exist_ok=True)
-        os.makedirs(os.path.join(results_dir, 'models'), exist_ok=True)
-        os.makedirs(os.path.join(results_dir, 'visualizations'), exist_ok=True)
-        os.makedirs(os.path.join(results_dir, 'metrics'), exist_ok=True)
-        os.makedirs(os.path.join(results_dir, 'temporal_analysis'), exist_ok=True)
-        
-        self.results_dir = results_dir
-        print(f"📁 Results will be saved to: {results_dir}")
-        return results_dir
+    # Calculate correlation matrix
+    X_numeric = X[numeric_cols]
+    corr_matrix = X_numeric.corr().abs()
     
-    def _save_plot(self, filename: str, dpi: int = 300, bbox_inches: str = 'tight') -> str:
-        """Save plot with Korean font support"""
-        plot_path = os.path.join(self.results_dir, 'visualizations', f"{filename}.png")
-        plt.savefig(plot_path, dpi=dpi, bbox_inches=bbox_inches)
-        print(f"  💾 Saved: {filename}.png")
-        return plot_path
+    # Find highly correlated pairs
+    upper_triangle = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    to_drop = [column for column in upper_triangle.columns 
+               if any(upper_triangle[column] > threshold)]
+
+    # Remove highly correlated features
+    X_reduced = X.drop(columns=to_drop)
     
-    def load_and_explore_data(self) -> pd.DataFrame:
-        """
-        Load data and perform basic exploration with temporal focus
-        """
-        print("\n" + "="*60)
-        print("1️⃣ DATA LOADING & TEMPORAL EXPLORATION")
-        print("="*60)
-        
-        try:
-            # Load data
-            self.data = pd.read_csv(self.config['data_path'], encoding='utf-8')
-            print(f"✅ Successfully loaded {self.config['data_path']} with utf-8 encoding")
-            print(f"✅ Data loaded: {self.data.shape}")
-            
-            # Basic dataset structure
-            print(f"\n📊 Dataset structure:")
-            print(f"   • Total records: {len(self.data):,}")
-            print(f"   • Total features: {len(self.data.columns)}")
-            print(f"   • Target variables: {len(self.config['target_columns'])}")
-            
-            # Temporal column analysis
-            temporal_col = self.config['temporal_column']
-            if temporal_col in self.data.columns:
-                # Convert to datetime with error handling
-                self.data[temporal_col] = pd.to_datetime(self.data[temporal_col], errors='coerce')
-                
-                # Remove records with invalid dates
-                invalid_dates = self.data[temporal_col].isna().sum()
-                if invalid_dates > 0:
-                    print(f"   ⚠️  Invalid date format found. Removing {invalid_dates} records.")
-                    self.data.dropna(subset=[temporal_col], inplace=True)
-                
-                print(f"\n📅 Temporal analysis:")
-                print(f"   • Temporal column: {temporal_col}")
-                print(f"   • Date range: {self.data[temporal_col].min()} to {self.data[temporal_col].max()}")
-                print(f"   • Total days: {(self.data[temporal_col].max() - self.data[temporal_col].min()).days}")
-                print(f"   • Final records after cleaning: {len(self.data):,}")
-                
-                # Verify no missing temporal data after cleaning
-                missing_temporal = self.data[temporal_col].isna().sum()
-                if missing_temporal > 0:
-                    print(f"   ❌ Still have missing temporal data: {missing_temporal} records")
-                else:
-                    print(f"   ✅ No missing temporal data after cleaning")
-            else:
-                raise ValueError(f"Temporal column '{temporal_col}' not found in dataset")
-            
-            return self.data
-            
-        except Exception as e:
-            print(f"❌ Error loading data: {e}")
-            raise
+    print(f"✅ Removed {len(to_drop)} highly correlated features")
+    print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
     
-    def implement_temporal_split(self) -> Tuple[pd.DataFrame, pd.DataFrame, Dict, Dict]:
-        """
-        Implement simple temporal train/test split using chronological ordering
-        with proper cutoff dates to ensure complete prediction periods
-        
-        Returns:
-            Tuple of (X_train, X_test, y_train_dict, y_test_dict)
-        """
-        print("\n" + "="*60)
-        print("2️⃣ TEMPORAL TRAIN/TEST SPLIT")
-        print("="*60)
-        
-        # Sort data chronologically by temporal column
-        temporal_col = self.config['temporal_column']
-        self.data = self.data.sort_values(temporal_col).reset_index(drop=True)
-        
-        # Convert temporal column to datetime if needed
-        if not pd.api.types.is_datetime64_any_dtype(self.data[temporal_col]):
-            self.data[temporal_col] = pd.to_datetime(self.data[temporal_col])
-        
-        # Define cutoff dates for complete prediction periods
-        # Current date: 2025-06-30 (as per dataset logic)
-        current_date = pd.Timestamp('2025-06-30')
-        
-        # Calculate cutoff dates for each risk year
-        # To have complete 4-year prediction, need contracts from 2021-06-30 or earlier
-        cutoff_dates = {
-            'risk_year1': current_date - pd.DateOffset(years=1),  # 2024-06-30
-            'risk_year2': current_date - pd.DateOffset(years=2),  # 2023-06-30  
-            'risk_year3': current_date - pd.DateOffset(years=3),  # 2022-06-30
-            'risk_year4': current_date - pd.DateOffset(years=4)   # 2021-06-30
-        }
-        
-        print(f"📊 Temporal split configuration:")
-        print(f"   • Current date: {current_date.strftime('%Y-%m-%d')}")
-        print(f"   • Cutoff dates for complete prediction periods:")
-        for target, cutoff in cutoff_dates.items():
-            print(f"     - {target}: {cutoff.strftime('%Y-%m-%d')}")
-        
-        # Use the most restrictive cutoff (risk_year4) for the main split
-        # This ensures all models have complete data
-        main_cutoff = cutoff_dates['risk_year4']  # 2021-06-30
-        
-        # Filter data to only include contracts before the cutoff
-        valid_data = self.data[self.data[temporal_col] <= main_cutoff].copy()
-        
-        print(f"\n📊 Data filtering results:")
-        print(f"   • Original data: {len(self.data):,} records")
-        print(f"   • Valid data (before {main_cutoff.strftime('%Y-%m-%d')}): {len(valid_data):,} records")
-        print(f"   • Excluded data: {len(self.data) - len(valid_data):,} records")
-        
-        # Simple chronological 80/20 split on valid data
-        train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(valid_data) * train_ratio)
-        
-        print(f"\n📊 Temporal split details:")
-        print(f"   • Train records: {train_size:,} ({train_size/len(valid_data):.1%})")
-        print(f"   • Test records: {len(valid_data) - train_size:,} ({(len(valid_data) - train_size)/len(valid_data):.1%})")
-        
-        # Get the actual split date for reporting
-        self.split_date = valid_data.iloc[train_size-1][temporal_col]
-        print(f"   • Split date: {self.split_date.strftime('%Y-%m-%d')}")
-        
-        # Split data
-        train_data = valid_data.iloc[:train_size].copy()
-        test_data = valid_data.iloc[train_size:].copy()
-        
-        # Separate features and targets
-        exclude_cols = self.config.get('exclude_columns', [])
-        target_cols = self.config['target_columns']
-        
-        # Feature columns (exclude targets, excluded columns, and temporal column)
-        feature_cols = [col for col in valid_data.columns 
-                       if col not in target_cols and col not in exclude_cols and col != temporal_col]
-        
-        print(f"\n📊 Feature analysis:")
-        print(f"   • Total features: {len(feature_cols)}")
-        print(f"   • Target variables: {len(target_cols)}")
-        print(f"   • Excluded columns: {len(exclude_cols)}")
-        print(f"   • Temporal column excluded from features: {temporal_col}")
-        
-        # Prepare X and y data
-        X_train = train_data[feature_cols]
-        X_test = test_data[feature_cols]
-        
-        y_train = {}
-        y_test = {}
-        
-        # Prepare target variables
-        print(f"\n🎯 Target variable analysis:")
-        for target in target_cols:
-            # Train set
-            y_train[target] = train_data[target]
-            train_available = y_train[target].notna().sum()
-            train_total = len(y_train[target])
-            
-            # Test set
-            y_test[target] = test_data[target]
-            test_available = y_test[target].notna().sum()
-            test_total = len(y_test[target])
-            
-            print(f"   • {target}:")
-            print(f"     - Train: {train_available:,}/{train_total:,} available ({train_available/train_total:.1%})")
-            print(f"     - Test: {test_available:,}/{test_total:,} available ({test_available/test_total:.1%})")
-            
-            # Store temporal statistics
-            self.temporal_stats[target] = {
-                'train_total': train_total,
-                'train_available': train_available,
-                'train_missing': train_total - train_available,
-                'test_total': test_total,
-                'test_available': test_available,
-                'test_missing': test_total - test_available,
-                'cutoff_date': cutoff_dates[target].strftime('%Y-%m-%d')
-            }
-        
-        self.X_train = X_train
-        self.X_test = X_test
-        self.y_train = y_train
-        self.y_test = y_test
-        
-        return X_train, X_test, y_train, y_test
+    return X_reduced
+
+def step2_remove_low_variance(X, threshold=0.001):
+    """Step 2: Remove low variance features"""
+    print(f"\n📊 Step 2: Variance Threshold (<{threshold} variance)")
+    print("-" * 40)
     
-    def train_models(self) -> Dict:
-        """
-        Train separate XGBoost regression models for each target with temporal awareness
-        
-        Returns:
-            Dictionary of trained models
-        """
-        print("\n" + "="*60)
-        print("3️⃣ MODEL TRAINING WITH TEMPORAL AWARENESS")
-        print("="*60)
-        
-        models = {}
-        xgb_params = self.config.get('xgb_params', {})
-        
-        # Default parameters for temporal model
-        default_params = {
-            'objective': 'reg:squarederror',
-            'enable_missing': True,
-            'random_state': 42,
-            'verbosity': 0
-        }
-        default_params.update(xgb_params)
-        
-        print(f"🔧 XGBoost parameters: {default_params}")
-        print(f"📈 Training {len(self.y_train)} separate models with temporal filtering...")
-        
-        for target_name, y_train_values in self.y_train.items():
-            print(f"\n   🎯 Training model for {target_name}...")
-            
-            try:
-                # Filter training data for this specific target (remove NaN values)
-                valid_mask = ~pd.isna(y_train_values)
-                X_train_filtered = self.X_train[valid_mask]
-                y_train_filtered = y_train_values[valid_mask]
-                
-                # Skip if no valid data
-                if len(y_train_filtered) == 0:
-                    print(f"      ❌ No valid training data for {target_name}")
-                    continue
-                
-                print(f"      📊 Training samples: {len(y_train_filtered):,} (filtered from {len(y_train_values):,})")
-                
-                # Create and train XGBoost model
-                model = xgb.XGBRegressor(**default_params)
-                model.fit(X_train_filtered, y_train_filtered)
-                
-                models[target_name] = model
-                
-                # Quick training summary
-                train_pred = model.predict(X_train_filtered)
-                train_mae = mean_absolute_error(y_train_filtered, train_pred)
-                
-                print(f"      ✅ Model trained successfully")
-                print(f"      📊 Training MAE: {train_mae:.4f}")
-                
-            except Exception as e:
-                print(f"      ❌ Error training {target_name}: {e}")
-                continue
-        
-        self.models = models
-        print(f"\n✅ Training completed: {len(models)} models ready")
-        
-        return models
+    initial_features = len(X.columns)
     
-    def predict_and_evaluate(self) -> Dict:
-        """
-        Generate predictions and evaluate model performance with temporal awareness
-        
-        Returns:
-            Dictionary of predictions and metrics
-        """
-        print("\n" + "="*60)
-        print("4️⃣ PREDICTION & TEMPORAL EVALUATION")
-        print("="*60)
-        
-        predictions = {}
-        metrics = {}
-        
-        print(f"🔮 Generating predictions for {len(self.models)} models...")
-        
-        for target_name, model in self.models.items():
-            print(f"\n   📊 Evaluating {target_name}...")
-            
-            try:
-                # Filter test data for this specific target (remove NaN values)
-                y_test_values = self.y_test[target_name]
-                valid_mask = ~pd.isna(y_test_values)
-                X_test_filtered = self.X_test[valid_mask]
-                y_test_filtered = y_test_values[valid_mask]
-                
-                # Skip if no valid test data
-                if len(y_test_filtered) == 0:
-                    print(f"      ❌ No valid test data for {target_name}")
-                    continue
-                
-                print(f"      📊 Test samples: {len(y_test_filtered):,} (filtered from {len(y_test_values):,})")
-                
-                # Generate predictions
-                y_pred_raw = model.predict(X_test_filtered)
-                
-                # Round predictions to nearest integer for classification
-                y_pred_rounded = np.round(y_pred_raw).astype(int)
-                
-                # Clip predictions to valid range [0, 3]
-                y_pred_clipped = np.clip(y_pred_rounded, 0, 3)
-                
-                # Calculate metrics
-                mae = mean_absolute_error(y_test_filtered, y_pred_raw)
-                accuracy = accuracy_score(y_test_filtered, y_pred_clipped)
-                
-                # Classification report
-                class_report = classification_report(y_test_filtered, y_pred_clipped, 
-                                                  output_dict=True, zero_division=0)
-                
-                # Store results
-                predictions[target_name] = {
-                    'y_true': y_test_filtered,
-                    'y_pred_raw': y_pred_raw,
-                    'y_pred_rounded': y_pred_clipped
-                }
-                
-                metrics[target_name] = {
-                    'mae': mae,
-                    'accuracy': accuracy,
-                    'classification_report': class_report,
-                    'sample_size': len(y_test_filtered)
-                }
-                
-                print(f"      ✅ Evaluation completed")
-                print(f"      📊 MAE: {mae:.4f}")
-                print(f"      📊 Accuracy: {accuracy:.4f}")
-                print(f"      📊 Sample size: {len(y_test_filtered):,}")
-                
-            except Exception as e:
-                print(f"      ❌ Error evaluating {target_name}: {e}")
-                continue
-        
-        self.predictions = predictions
-        self.metrics = metrics
-        
-        return predictions, metrics
+    # Get only numeric columns
+    numeric_cols = X.select_dtypes(include=[np.number]).columns
+    non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns
     
-    def create_visualizations(self):
-        """Create comprehensive visualizations for temporal split analysis"""
-        print("\n" + "="*60)
-        print("5️⃣ TEMPORAL VISUALIZATIONS")
-        print("="*60)
-        
-        # 1. Temporal split visualization
-        self._plot_temporal_split()
-        
-        # 2. Target distribution comparison
-        self._plot_target_distributions()
-        
-        # 3. Performance metrics visualization
-        self._plot_performance_metrics()
-        
-        # 4. Data availability analysis (removed - not needed)
+    if len(numeric_cols) == 0:
+        print("⚠️ No numeric features for variance analysis")
+        return X
     
-    def _plot_temporal_split(self):
-        """Visualize the temporal split with proper cutoff dates and total data distribution"""
-        temporal_col = self.config['temporal_column']
-        
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-        
-        # Get the valid data that was used for the split
-        current_date = pd.Timestamp('2025-06-30')
-        main_cutoff = current_date - pd.DateOffset(years=4)  # 2021-06-30
-        valid_data = self.data[self.data[temporal_col] <= main_cutoff].copy()
-        
-        # Calculate split indices for valid data
-        train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(valid_data) * train_ratio)
-        
-        # Plot 1: Complete data distribution with cutoff and split lines
-        # Create unified monthly bins for consistent visualization
-        all_dates = self.data[temporal_col]
-        bins = pd.date_range(start=all_dates.min().to_period('M').start_time, 
-                            end=all_dates.max().to_period('M').end_time + pd.offsets.MonthEnd(1), 
-                            freq='M')
-        
-        # Show total data distribution (including excluded data)
-        ax1.hist(all_dates, bins=bins, alpha=0.3, label='Total Data (Including Excluded)', 
-                color='gray', edgecolor='black', linewidth=0.5)
-        
-        # Show valid data distribution
-        train_dates = valid_data.iloc[:train_size][temporal_col]
-        test_dates = valid_data.iloc[train_size:][temporal_col]
-        
-        ax1.hist(train_dates, bins=bins, alpha=0.7, label='Train Set (Valid Data)', color='blue')
-        ax1.hist(test_dates, bins=bins, alpha=0.7, label='Test Set (Valid Data)', color='red')
-        
-        # Add cutoff and split lines
-        ax1.axvline(self.split_date, color='black', linestyle='--', linewidth=2,
-                   label=f'Split Date: {self.split_date.strftime("%Y-%m-%d")}')
-        ax1.axvline(main_cutoff, color='red', linestyle=':', linewidth=3,
-                   label=f'Cutoff Date: {main_cutoff.strftime("%Y-%m-%d")} (4-year prediction)')
-        
-        ax1.set_title('Complete Data Distribution with Temporal Split', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Contract Date')
-        ax1.set_ylabel('Number of Contracts')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Monthly distribution (valid data only)
-        train_monthly = train_dates.dt.to_period('M').value_counts().sort_index()
-        test_monthly = test_dates.dt.to_period('M').value_counts().sort_index()
-        
-        ax2.plot(train_monthly.index.astype(str), train_monthly.values, 
-                marker='o', label='Train Set', color='blue')
-        ax2.plot(test_monthly.index.astype(str), test_monthly.values, 
-                marker='s', label='Test Set', color='red')
-        ax2.set_title('Monthly Contract Distribution (Valid Data Only)', fontsize=14, fontweight='bold')
-        ax2.set_xlabel('Month')
-        ax2.set_ylabel('Number of Contracts')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
-        
-        plt.tight_layout()
-        self._save_plot("01_temporal_split")
+    # Apply variance threshold to numeric columns
+    X_numeric = X[numeric_cols].fillna(0)
+    selector = VarianceThreshold(threshold=threshold)
     
-    def _plot_target_distributions(self):
-        """Compare target distributions between train and test sets"""
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('Target Variable Distributions: Train vs Test', fontsize=16, fontweight='bold')
+    try:
+        X_numeric_filtered = selector.fit_transform(X_numeric)
+        selected_numeric_cols = X_numeric.columns[selector.get_support()].tolist()
         
-        for i, target in enumerate(self.config['target_columns']):
-            ax = axes[i//2, i%2]
-            
-            if target in self.y_train and target in self.y_test:
-                # Get available data
-                train_data = self.y_train[target].dropna()
-                test_data = self.y_test[target].dropna()
-                
-                if len(train_data) > 0 and len(test_data) > 0:
-                    # Get all unique risk levels from both sets
-                    all_levels = sorted(set(train_data.unique()) | set(test_data.unique()))
-                    
-                    # Count occurrences for each level, filling with 0 if missing
-                    train_counts = train_data.value_counts().reindex(all_levels, fill_value=0)
-                    test_counts = test_data.value_counts().reindex(all_levels, fill_value=0)
-                    
-                    x = np.arange(len(all_levels))
-                    width = 0.35
-                    
-                    ax.bar(x - width/2, train_counts.values, width, label='Train', alpha=0.7)
-                    ax.bar(x + width/2, test_counts.values, width, label='Test', alpha=0.7)
-                    
-                    ax.set_title(f'{target} Distribution', fontsize=12, fontweight='bold')
-                    ax.set_xlabel('Risk Level')
-                    ax.set_ylabel('Count')
-                    ax.set_xticks(x)
-                    ax.set_xticklabels(all_levels)
-                    ax.legend()
-                    ax.grid(True, alpha=0.3)
+        # Combine selected numeric + all non-numeric columns
+        final_cols = selected_numeric_cols + list(non_numeric_cols)
+        X_reduced = X[final_cols]
         
-        plt.tight_layout()
-        self._save_plot("02_target_distributions")
+        removed_count = len(numeric_cols) - len(selected_numeric_cols)
+        print(f"✅ Removed {removed_count} low variance features")
+        print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
+        
+        return X_reduced
+        
+    except Exception as e:
+        print(f"⚠️ Variance filter failed: {e}")
+        return X
+
+def step3_remove_high_missing(X, threshold=0.5):
+    """Step 3: Remove features with high missing values"""
+    print(f"\n📊 Step 3: Missing Value Analysis (>{threshold*100}% missing)")
+    print("-" * 40)
     
-    def _plot_performance_metrics(self):
-        """Visualize performance metrics across targets"""
-        if not hasattr(self, 'metrics') or not self.metrics:
-            print("   ⚠️  No metrics available for visualization")
+    initial_features = len(X.columns)
+    
+    # Calculate missing percentages
+    missing_percentages = X.isnull().sum() / len(X)
+    
+    # Find features to remove
+    to_remove = missing_percentages[missing_percentages > threshold].index.tolist()
+    
+    # Remove high missing features
+    X_reduced = X.drop(columns=to_remove)
+    
+    print(f"✅ Removed {len(to_remove)} high missing features")
+    print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
+    
+    return X_reduced
+
+def step4_xgboost_importance(X, y, keep_percentage=60):
+    """Step 4: XGBoost feature importance selection"""
+    print(f"\n📊 Step 4: XGBoost Feature Importance (keep top {keep_percentage}%)")
+    print("-" * 40)
+    
+    initial_features = len(X.columns)
+    
+    # Use first target for feature selection
+    y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
+    
+    # Remove NaN targets and get numeric features
+    mask = ~pd.isna(y_single)
+    X_clean = X[mask]
+    y_clean = y_single[mask]
+    
+    # Get only numeric features for XGBoost
+    numeric_cols = X_clean.select_dtypes(include=[np.number]).columns
+    non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns
+    
+    if len(numeric_cols) == 0:
+        print("⚠️ No numeric features for XGBoost importance")
+        return X
+    
+    X_numeric = X_clean[numeric_cols].fillna(0)
+    
+    try:
+        # Train XGBoost (diagnostic importance model)
+        model = xgb.XGBClassifier(
+            n_estimators=50,
+            random_state=42,
+            verbosity=0,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='mlogloss'
+        )
+        model.fit(X_numeric, y_clean)
+        
+        # Get feature importance
+        importance_scores = model.feature_importances_
+        importance_df = pd.DataFrame({
+            'feature': X_numeric.columns,
+            'importance': importance_scores
+        }).sort_values('importance', ascending=False)
+        
+        # Select top percentage
+        n_features = max(int(len(numeric_cols) * keep_percentage / 100), 5)
+        selected_numeric = importance_df.head(n_features)['feature'].tolist()
+        
+        # Combine selected numeric + all non-numeric (diagnostics only; do not train with non-numerics)
+        final_cols = selected_numeric + list(non_numeric_cols)
+        X_reduced = X[final_cols]
+        
+        removed_count = len(numeric_cols) - len(selected_numeric)
+        print(f"✅ Kept top {len(selected_numeric)} numeric + {len(non_numeric_cols)} non-numeric features")
+        print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
+        
+        return X_reduced
+        
+    except Exception as e:
+        print(f"⚠️ XGBoost importance failed: {e}")
+        return X
+
+def create_visualizations(X_original, X_reduced, y, results_dir):
+    """Create before/after comparison visualizations with proper train/test split"""
+    print(f"\n📊 Creating Comparison Visualizations (Proper Validation)")
+    print("-" * 50)
+    
+    try:
+        # Use first target for visualization
+        y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
+        
+        # Remove NaN targets
+        mask = ~pd.isna(y_single)
+        X_orig_clean = X_original[mask]
+        X_red_clean = X_reduced[mask]
+        y_clean = y_single[mask]
+        
+        if len(X_orig_clean) < 100:  # Increased minimum for train/test split
+            print("⚠️ Insufficient samples for train/test split visualization")
             return
         
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        # Get numeric features for modeling
+        X_orig_numeric = X_orig_clean.select_dtypes(include=[np.number]).fillna(0)
+        X_red_numeric = X_red_clean.select_dtypes(include=[np.number]).fillna(0)
         
-        # Extract metrics
-        targets = list(self.metrics.keys())
-        mae_scores = [self.metrics[t]['mae'] for t in targets]
-        accuracy_scores = [self.metrics[t]['accuracy'] for t in targets]
-        sample_sizes = [self.metrics[t]['sample_size'] for t in targets]
+        if len(X_orig_numeric.columns) == 0 or len(X_red_numeric.columns) == 0:
+            print("⚠️ No numeric features for visualization")
+            return
         
-        # Plot 1: MAE and Accuracy
-        x = np.arange(len(targets))
-        width = 0.35
+        print(f"📊 Creating train/test split (80/20) for proper validation (stratified random)...")
+        print(f"   • Total samples: {len(X_orig_numeric):,}")
         
-        ax1.bar(x - width/2, mae_scores, width, label='MAE', alpha=0.7, color='red')
-        ax1_twin = ax1.twinx()
-        ax1_twin.bar(x + width/2, accuracy_scores, width, label='Accuracy', alpha=0.7, color='green')
-        
-        ax1.set_title('Model Performance Metrics', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Target Variable')
-        ax1.set_ylabel('MAE', color='red')
-        ax1_twin.set_ylabel('Accuracy', color='green')
-        ax1.set_xticks(x)
-        ax1.set_xticklabels(targets)
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Sample sizes
-        ax2.bar(targets, sample_sizes, alpha=0.7, color='blue')
-        ax2.set_title('Test Set Sample Sizes', fontsize=14, fontweight='bold')
-        ax2.set_xlabel('Target Variable')
-        ax2.set_ylabel('Sample Size')
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        self._save_plot("03_performance_metrics")
-    
+        # Create stratified train/test split (diagnostics only)
+        from sklearn.model_selection import train_test_split
 
-    
-    def _print_performance_summary(self):
-        """Print comprehensive performance summary"""
-        print("\n" + "="*60)
-        print("📊 TEMPORAL SPLIT PERFORMANCE SUMMARY")
-        print("="*60)
-        
-        # Calculate split statistics
-        train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(self.data) * train_ratio)
-        
-        print(f"📅 Split Information:")
-        print(f"   • Split date: {self.split_date}")
-        print(f"   • Total records: {len(self.data):,}")
-        print(f"   • Train records: {train_size:,} ({train_size/len(self.data):.1%})")
-        print(f"   • Test records: {len(self.data) - train_size:,} ({(len(self.data) - train_size)/len(self.data):.1%})")
-        print(f"   • Temporal column: {self.config['temporal_column']} (excluded from features)")
-        
-        print(f"\n🎯 Target Variable Coverage:")
-        for target, stats in self.temporal_stats.items():
-            print(f"   • {target}:")
-            print(f"     - Train: {stats['train_available']:,}/{stats['train_total']:,} ({stats['train_available']/stats['train_total']:.1%})")
-            print(f"     - Test: {stats['test_available']:,}/{stats['test_total']:,} ({stats['test_available']/stats['test_total']:.1%})")
-        
-        if hasattr(self, 'metrics'):
-            print(f"\n📈 Model Performance:")
-            for target, metric in self.metrics.items():
-                print(f"   • {target}:")
-                print(f"     - MAE: {metric['mae']:.4f}")
-                print(f"     - Accuracy: {metric['accuracy']:.4f}")
-                print(f"     - Test samples: {metric['sample_size']:,}")
-    
-    def _save_performance_metrics(self, summary_data: List[Dict]):
-        """Save detailed performance metrics"""
-        # Save comprehensive metrics
-        metrics_file = os.path.join(self.results_dir, 'metrics', 'step4_detailed_results.json')
-        
-        # Calculate split statistics
-        train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(self.data) * train_ratio)
-        
-        results_summary = {
-            'split_info': {
-                'split_method': 'simple_temporal',
-                'split_date': str(self.split_date),
-                'train_ratio': self.config.get('train_ratio', 0.8),
-                'temporal_column': self.config['temporal_column'],
-                'total_records': len(self.data),
-                'train_records': train_size,
-                'test_records': len(self.data) - train_size
-            },
-            'temporal_stats': self.temporal_stats,
-            'model_metrics': self.metrics if hasattr(self, 'metrics') else {},
-            'summary_data': summary_data
-        }
-        
-        with open(metrics_file, 'w', encoding='utf-8') as f:
-            json.dump(results_summary, f, indent=2, ensure_ascii=False, default=str)
-        
-        print(f"  💾 Saved detailed metrics: step4_detailed_results.json")
-    
-    def _save_models(self):
-        """Save trained models"""
-        print(f"\n🤖 Saving trained models...")
-        
-        for target_name, model in self.models.items():
-            model_path = os.path.join(self.results_dir, 'models', f'{target_name}_model.json')
-            model.save_model(model_path)
-            print(f"  🤖 Model saved: {target_name}_model.json")
-    
-    def run_step4_pipeline(self):
-        """
-        Execute complete Step 4 pipeline with temporal split
-        """
-        print("🏗️ EXECUTING STEP 4: TEMPORAL TRAIN/TEST SPLIT")
-        print("=" * 70)
-        
-        try:
-            # Create results directory first
-            self._create_results_directory()
-            
-            # Step 1: Load and explore data
-            self.load_and_explore_data()
-            
-            # Step 2: Implement temporal split
-            self.implement_temporal_split()
-            
-            # Step 3: Train models
-            self.train_models()
-            
-            # Step 4: Predict and evaluate
-            self.predict_and_evaluate()
-            
-            # Step 5: Create visualizations
-            self.create_visualizations()
-            
-            # Step 6: Save results
-            self._save_performance_metrics([])
-            self._save_models()
-            
-            print("\n🎉 STEP 4 COMPLETED SUCCESSFULLY!")
-            print("✅ Temporal split implemented")
-            print("✅ No temporal leakage ensured")
-            print("✅ Realistic evaluation achieved")
-            
-            # Print results summary
-            self._print_results_summary()
-            
-        except Exception as e:
-            print(f"\n❌ STEP 4 FAILED: {e}")
-            raise
-    
-    def _print_results_summary(self):
-        """Print summary of all generated files and outputs"""
-        print(f"\n📁 RESULTS SUMMARY:")
-        print(f"   All outputs saved to: {self.results_dir}")
-        print(f"   📊 Visualizations:")
-        print(f"      • 01_temporal_split.png")
-        print(f"      • 02_target_distributions.png")
-        print(f"      • 03_performance_metrics.png")
+        idx_train, idx_test = train_test_split(
+            y_clean.index,
+            test_size=0.2,
+            random_state=42,
+            shuffle=True,
+            stratify=y_clean
+        )
 
-        print(f"   📈 Metrics:")
-        print(f"      • step4_detailed_results.json")
-        print(f"   🤖 Models:")
-        for target in self.config['target_columns']:
-            print(f"      • {target}_model.json")
-        print(f"\n💡 Use these files for offline analysis and reporting!")
+        # Align splits across original and reduced feature sets
+        X_orig_train, X_orig_test = X_orig_numeric.loc[idx_train], X_orig_numeric.loc[idx_test]
+        X_red_train, X_red_test = X_red_numeric.loc[idx_train], X_red_numeric.loc[idx_test]
+        y_train, y_test = y_clean.loc[idx_train], y_clean.loc[idx_test]
+        
+        print(f"   • Training samples: {len(X_orig_train):,}")
+        print(f"   • Test samples: {len(X_orig_test):,}")
+        
+        # Train both RandomForest and XGBoost models for comparison
+        print(f"   🎯 Training RandomForest models...")
+        rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        
+        # RandomForest - Original model
+        rf_orig = rf_model.fit(X_orig_train, y_train)
+        y_pred_rf_orig = rf_orig.predict(X_orig_test)
+        
+        # RandomForest - Reduced model  
+        rf_red = rf_model.fit(X_red_train, y_train)
+        y_pred_rf_red = rf_red.predict(X_red_test)
+        
+        print(f"   🎯 Training XGBoost models...")
+        xgb_model = xgb.XGBClassifier(
+            n_estimators=100,
+            random_state=42,
+            verbosity=0,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='mlogloss'
+        )
+        
+        # XGBoost - Original model
+        xgb_orig = xgb_model.fit(X_orig_train, y_train)
+        y_pred_xgb_orig = xgb_orig.predict(X_orig_test)
+        
+        # XGBoost - Reduced model  
+        xgb_red = xgb_model.fit(X_red_train, y_train)
+        y_pred_xgb_red = xgb_red.predict(X_red_test)
+        
+        # Create performance comparison for both models
+        create_performance_comparison(y_test, y_pred_rf_orig, y_pred_rf_red, 
+                                    y_pred_xgb_orig, y_pred_xgb_red,
+                                    X_original, X_reduced, results_dir)
+        
+        # Create confusion matrix comparison for XGBoost (since it's the main model)
+        create_confusion_matrix_comparison(y_test, y_pred_xgb_orig, y_pred_xgb_red, results_dir)
+        
+        print("✅ Visualizations created successfully with proper validation")
+        
+    except Exception as e:
+        print(f"⚠️ Visualization creation failed: {e}")
+        import traceback
+        traceback.print_exc()
 
-
-def get_step4_config():
-    """
-    Configuration for Step 4 temporal split model
-    """
-    return {
-        'data_path': 'dataset/credit_risk_dataset.csv',
-        'temporal_column': '보험청약일자',
-        'train_ratio': 0.8,
-        'exclude_columns': [
-            '사업자등록번호',
-            '대상자명',
-            '대상자등록이력일시',
-            '대상자기본주소',
-            '청약번호',
-            '청약상태코드',
-            '수출자대상자번호',
-            '특별출연협약코드',
-            '업종코드1'
-        ],
-        'target_columns': ['risk_year1', 'risk_year2', 'risk_year3', 'risk_year4'],
-        'random_state': 42,
-        'xgb_params': {
-            'enable_missing': True,
-            'random_state': 42,
-            'verbosity': 0
-        }
+def create_performance_comparison(y_true, y_pred_rf_orig, y_pred_rf_red, 
+                                y_pred_xgb_orig, y_pred_xgb_red, X_orig, X_red, results_dir):
+    """Create performance metrics comparison chart with proper validation for both RF and XGBoost"""
+    
+    # Calculate metrics for RandomForest
+    metrics_rf_orig = {
+        'Accuracy': accuracy_score(y_true, y_pred_rf_orig),
+        'F1-Score': f1_score(y_true, y_pred_rf_orig, average='macro', zero_division=0),
+        'Precision': precision_score(y_true, y_pred_rf_orig, average='macro', zero_division=0),
+        'Recall': recall_score(y_true, y_pred_rf_orig, average='macro', zero_division=0)
     }
+    
+    metrics_rf_red = {
+        'Accuracy': accuracy_score(y_true, y_pred_rf_red),
+        'F1-Score': f1_score(y_true, y_pred_rf_red, average='macro', zero_division=0),
+        'Precision': precision_score(y_true, y_pred_rf_red, average='macro', zero_division=0),
+        'Recall': recall_score(y_true, y_pred_rf_red, average='macro', zero_division=0)
+    }
+    
+    # Calculate metrics for XGBoost
+    metrics_xgb_orig = {
+        'Accuracy': accuracy_score(y_true, y_pred_xgb_orig),
+        'F1-Score': f1_score(y_true, y_pred_xgb_orig, average='macro', zero_division=0),
+        'Precision': precision_score(y_true, y_pred_xgb_orig, average='macro', zero_division=0),
+        'Recall': recall_score(y_true, y_pred_xgb_orig, average='macro', zero_division=0)
+    }
+    
+    metrics_xgb_red = {
+        'Accuracy': accuracy_score(y_true, y_pred_xgb_red),
+        'F1-Score': f1_score(y_true, y_pred_xgb_red, average='macro', zero_division=0),
+        'Precision': precision_score(y_true, y_pred_xgb_red, average='macro', zero_division=0),
+        'Recall': recall_score(y_true, y_pred_xgb_red, average='macro', zero_division=0)
+    }
+    
+    # Print validation results
+    print(f"\n📊 VALIDATION RESULTS (80/20 Train/Test Split):")
+    print("-" * 60)
+    print(f"   🎯 RandomForest F1-Score (Macro):")
+    print(f"      • Before Step4: {metrics_rf_orig['F1-Score']:.4f}")
+    print(f"      • After Step4:  {metrics_rf_red['F1-Score']:.4f}")
+    print(f"      • Difference:   {metrics_rf_red['F1-Score'] - metrics_rf_orig['F1-Score']:+.4f}")
+    print(f"   🎯 XGBoost F1-Score (Macro):")
+    print(f"      • Before Step4: {metrics_xgb_orig['F1-Score']:.4f}")
+    print(f"      • After Step4:  {metrics_xgb_red['F1-Score']:.4f}")
+    print(f"      • Difference:   {metrics_xgb_red['F1-Score'] - metrics_xgb_orig['F1-Score']:+.4f}")
+    print(f"   📈 RandomForest Accuracy:")
+    print(f"      • Before Step4: {metrics_rf_orig['Accuracy']:.4f}")
+    print(f"      • After Step4:  {metrics_rf_red['Accuracy']:.4f}")
+    print(f"      • Difference:   {metrics_rf_red['Accuracy'] - metrics_rf_orig['Accuracy']:+.4f}")
+    print(f"   📈 XGBoost Accuracy:")
+    print(f"      • Before Step4: {metrics_xgb_orig['Accuracy']:.4f}")
+    print(f"      • After Step4:  {metrics_xgb_red['Accuracy']:.4f}")
+    print(f"      • Difference:   {metrics_xgb_red['Accuracy'] - metrics_xgb_orig['Accuracy']:+.4f}")
+    
+    # Create comparison plot with 4 subplots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Step 4 Feature Reduction Impact - Model Comparison', fontsize=16, fontweight='bold')
+    
+    # 1. RandomForest Performance Metrics
+    metrics_names = list(metrics_rf_orig.keys())
+    rf_orig_values = list(metrics_rf_orig.values())
+    rf_red_values = list(metrics_rf_red.values())
+    
+    x_pos = np.arange(len(metrics_names))
+    width = 0.35
+    
+    bars1 = ax1.bar(x_pos - width/2, rf_orig_values, width, 
+                    label=f'Before Step4 ({X_orig.shape[1]} features)', alpha=0.8, color='lightcoral')
+    bars2 = ax1.bar(x_pos + width/2, rf_red_values, width, 
+                    label=f'After Step4 ({X_red.shape[1]} features)', alpha=0.8, color='lightblue')
+    
+    ax1.set_xlabel('Metrics')
+    ax1.set_ylabel('Score')
+    ax1.set_title('RandomForest Performance Comparison')
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels(metrics_names)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for bar in bars1:
+        height = bar.get_height()
+        ax1.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
+    for bar in bars2:
+        height = bar.get_height()
+        ax1.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
+    
+    # 2. XGBoost Performance Metrics
+    xgb_orig_values = list(metrics_xgb_orig.values())
+    xgb_red_values = list(metrics_xgb_red.values())
+    
+    bars3 = ax2.bar(x_pos - width/2, xgb_orig_values, width, 
+                    label=f'Before Step4 ({X_orig.shape[1]} features)', alpha=0.8, color='salmon')
+    bars4 = ax2.bar(x_pos + width/2, xgb_red_values, width, 
+                    label=f'After Step4 ({X_red.shape[1]} features)', alpha=0.8, color='skyblue')
+    
+    ax2.set_xlabel('Metrics')
+    ax2.set_ylabel('Score')
+    ax2.set_title('XGBoost Performance Comparison')
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(metrics_names)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for bar in bars3:
+        height = bar.get_height()
+        ax2.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
+    for bar in bars4:
+        height = bar.get_height()
+        ax2.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
+    
+    # 3. Feature Count Comparison
+    feature_counts = ['Before Step4', 'After Step4']
+    counts = [X_orig.shape[1], X_red.shape[1]]
+    colors = ['lightcoral', 'lightblue']
+    
+    bars = ax3.bar(feature_counts, counts, color=colors, alpha=0.8)
+    ax3.set_ylabel('Number of Features')
+    ax3.set_title('Feature Count Comparison')
+    ax3.grid(True, alpha=0.3)
+    
+    # Add percentage reduction
+    reduction_pct = (1 - X_red.shape[1] / X_orig.shape[1]) * 100
+    ax3.text(0.5, max(counts) * 0.8, f'Reduction: {reduction_pct:.1f}%', 
+            ha='center', fontsize=12, fontweight='bold')
+    
+    # Add value labels on bars
+    for bar in bars:
+        height = bar.get_height()
+        ax3.annotate(f'{int(height)}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
+    
+    # 4. F1-Score Comparison Summary
+    models = ['RandomForest', 'XGBoost']
+    before_f1 = [metrics_rf_orig['F1-Score'], metrics_xgb_orig['F1-Score']]
+    after_f1 = [metrics_rf_red['F1-Score'], metrics_xgb_red['F1-Score']]
+    
+    x_pos = np.arange(len(models))
+    width = 0.35
+    
+    bars5 = ax4.bar(x_pos - width/2, before_f1, width, 
+                    label='Before Step4', alpha=0.8, color='lightcoral')
+    bars6 = ax4.bar(x_pos + width/2, after_f1, width, 
+                    label='After Step4', alpha=0.8, color='lightblue')
+    
+    ax4.set_xlabel('Models')
+    ax4.set_ylabel('F1-Score (Macro)')
+    ax4.set_title('F1-Score Comparison Summary')
+    ax4.set_xticks(x_pos)
+    ax4.set_xticklabels(models)
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for bar in bars5:
+        height = bar.get_height()
+        ax4.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
+    for bar in bars6:
+        height = bar.get_height()
+        ax4.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
+    
+    plt.tight_layout()
+    plt.savefig(f'{results_dir}/step4_performance_comparison.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
+def create_confusion_matrix_comparison(y_true, y_pred_orig, y_pred_red, results_dir):
+    """Create confusion matrix comparison"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Original model confusion matrix
+    cm_orig = confusion_matrix(y_true, y_pred_orig)
+    sns.heatmap(cm_orig, annot=True, fmt='d', cmap='Blues', ax=ax1)
+    ax1.set_title('Confusion Matrix - Before Step4')
+    ax1.set_xlabel('Predicted')
+    ax1.set_ylabel('Actual')
+    
+    # Reduced model confusion matrix  
+    cm_red = confusion_matrix(y_true, y_pred_red)
+    sns.heatmap(cm_red, annot=True, fmt='d', cmap='Greens', ax=ax2)
+    ax2.set_title('Confusion Matrix - After Step4')
+    ax2.set_xlabel('Predicted')
+    ax2.set_ylabel('Actual')
+    
+    plt.tight_layout()
+    plt.savefig(f'{results_dir}/step4_confusion_matrix_comparison.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
-# Main execution
+def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_outside_exclude):
+    """Save results and create complete dataset"""
+    print(f"\n💾 Saving Results")
+    print("-" * 30)
+    
+    # Create results directory
+    results_dir = "result/step4_feature_reduction"
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # Save selected features list (with proper header)
+    pd.DataFrame({'feature_name': X_reduced.columns.tolist()}).to_csv(
+        f'{results_dir}/step4_selected_features.csv', 
+        index=False
+    )
+    
+    # Create complete dataset: excluded columns + selected features + targets
+    excluded_data = df_original[exclude_cols].copy()
+    target_data = df_original[target_cols].copy()
+    
+    complete_dataset = pd.concat([
+        excluded_data.reset_index(drop=True),
+        X_reduced.reset_index(drop=True), 
+        target_data.reset_index(drop=True)
+    ], axis=1)
+    
+    # Save to dataset folder
+    dataset_path = 'dataset/credit_risk_dataset_step4.csv'
+    complete_dataset.to_csv(dataset_path, index=False)
+        
+    # Save summary
+    summary = {
+        'execution_date': datetime.now().isoformat(),
+        'approach': '5_step_simplified_reduction',
+        'steps': [
+            '1. Correlation analysis (>0.9)',
+            '2. Variance threshold (<0.001)', 
+            '3. Missing values (>50%)',
+            '4. XGBoost importance (top 60%)'
+        ],
+        'final_feature_count': len(X_reduced.columns),
+        'dataset_composition': {
+            'excluded_columns': len(exclude_cols),
+            'selected_features': len(X_reduced.columns), 
+            'target_columns': len(target_cols),
+            'total_columns': complete_dataset.shape[1]
+        },
+        'non_numeric_outside_exclude': non_numeric_outside_exclude
+    }
+    
+    with open(f'{results_dir}/step4_summary.json', 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    
+    print(f"✅ Complete dataset saved to: {dataset_path}")
+    print(f"   📋 Excluded columns: {len(exclude_cols)}")
+    print(f"   📊 Selected features: {len(X_reduced.columns)}")
+    print(f"   🎯 Target columns: {len(target_cols)}")
+    print(f"   📄 Total columns: {complete_dataset.shape[1]}")
+    print(f"   📈 Total rows: {complete_dataset.shape[0]}")
+    
+    return results_dir
+
+def main(
+    corr_threshold: float = 0.9,
+    variance_threshold: float = 0.001,
+    missing_threshold: float = 0.5,
+    keep_percentage: int = 60
+):
+    """Main execution - Simple feature reduction (configurable thresholds)"""
+    
+    # Load data
+    df, X, y, exclude_cols, target_cols = load_data()
+    X_original = X.copy()  # Keep original for comparison
+    
+    print(f"\n🔬 SYSTEMATIC FEATURE REDUCTION ENGINE")
+    print("=" * 50)
+    print(f"📊 Starting features: {len(X.columns)}")
+    
+    # Step 1: Remove high correlation
+    X = step1_remove_high_correlation(X, threshold=corr_threshold)
+    
+    # Step 2: Remove low variance  
+    X = step2_remove_low_variance(X, threshold=variance_threshold)
+    
+    # Step 3: Remove high missing
+    X = step3_remove_high_missing(X, threshold=missing_threshold)
+    
+    # Step 4: XGBoost feature importance
+    X_final = step4_xgboost_importance(X, y, keep_percentage=keep_percentage)
+
+    # Audit non-numeric features outside exclude cols (diagnostics only)
+    non_numeric_outside_exclude = audit_non_numeric_columns(X_final, exclude_cols)
+    
+    # Calculate final stats
+    reduction_pct = (1 - len(X_final.columns) / len(X_original.columns)) * 100
+    
+    print(f"\n✅ REDUCTION COMPLETE!")
+    print("=" * 30)
+    print(f"📊 Final features: {len(X_final.columns)}")
+    print(f"📉 Reduction: {len(X_original.columns)} → {len(X_final.columns)} ({reduction_pct:.1f}% removed)")
+    # Note: No business-logic preservation enforced by design
+    
+    # Save results and create dataset
+    results_dir = save_results(df, X_final, exclude_cols, target_cols, non_numeric_outside_exclude)
+    
+    # Create comparison visualizations
+    create_visualizations(X_original, X_final, y, results_dir)
+    
+    print(f"\n🎉 FEATURE REDUCTION COMPLETED!")
+    print("=" * 50)
+    print("✅ Systematic reduction - multicollinearity eliminated")
+    print("✅ XGBoost optimized - performance validated") 
+    print(f"✅ Results saved in: {results_dir}")
+    
+    return X_final
+
 if __name__ == "__main__":
-    
-    print("🚀 Starting XGBoost Risk Prediction Model - Step 4")
-    print("="*60)
-    
-    # Get configuration
-    config = get_step4_config()
-    
-    # Create and run temporal split model
-    temporal_model = TemporalSplitModel(config)
-    temporal_model.run_step4_pipeline()
-    
-    print("\n🏁 Step 4 execution completed!")
-    print("Ready to proceed to Step 5: Class Imbalance Strategy") 
+    results = main()

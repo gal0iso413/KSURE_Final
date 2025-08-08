@@ -1,707 +1,711 @@
 """
-Step 5: Class Imbalance Strategy
-================================
-Compare different imbalance strategies to choose the best approach for handling
-severe class imbalance in credit risk prediction.
+XGBoost Risk Prediction Model - Step 5: Unified Temporal Validation
+==================================================================
 
-Strategies:
-1. Baseline (No imbalance strategy) - from Step 4
-2. Class Weights (sample_weight for regression)
-3. SMOTE (after temporal split, no data leakage)
+Step 5 Implementation - Validation Strategies (Max 5):
+1. Random Split (shuffle=True) - Performance baseline ignoring temporal characteristics
+2. Stratified Random Split (shuffle=True, stratify=y) - Baseline with class balance
+3. Simple Temporal Holdout (shuffle=False) - Basic temporal validation (past vs future)
+4. Expanding Window CV - Evaluates stability as more data accumulates over time
+5. Rolling Window CV - Evaluates adaptation to recent trends by discarding old data
 
-Author: AI Assistant
-Date: 2024
+Design Focus:
+- Proper data sorting by 보험청약일자 before temporal validation
+- Consistent parameters across all targets (same split ratios, fold counts)
+- Multi-target analysis (risk_year1, risk_year2, risk_year3, risk_year4)
+- Unified validation strategy selection for all targets
+- Clear distinction between temporal and non-temporal approaches
 """
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import xgboost as xgb
 import json
 import os
 from datetime import datetime
-from typing import Dict, Tuple, List
+from sklearn.model_selection import TimeSeriesSplit, train_test_split
+from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib.font_manager as fm
+import platform
 import warnings
 warnings.filterwarnings('ignore')
 
-# ML Libraries
-from sklearn.metrics import mean_absolute_error, accuracy_score, classification_report, confusion_matrix, f1_score, recall_score
-from sklearn.utils.class_weight import compute_class_weight
-from sklearn.impute import SimpleImputer
-from imblearn.over_sampling import SMOTE
-import xgboost as xgb
+# Configure matplotlib for Korean fonts
+def setup_korean_font():
+    """Set up Korean font for matplotlib visualizations"""
+    system = platform.system()
+    
+    if system == "Windows":
+        korean_fonts = ['Malgun Gothic', 'NanumGothic', 'NanumBarunGothic', 'Gulim', 'Dotum']
+    elif system == "Darwin":  # macOS
+        korean_fonts = ['AppleGothic', 'NanumGothic']
+    else:  # Linux
+        korean_fonts = ['NanumGothic', 'NanumBarunGothic', 'UnDotum']
+    
+    available_fonts = [f.name for f in fm.fontManager.ttflist]
+    korean_font = None
+    
+    for font in korean_fonts:
+        if font in available_fonts:
+            korean_font = font
+            break
+    
+    if korean_font:
+        plt.rcParams['font.family'] = korean_font
+    else:
+        plt.rcParams['font.family'] = ['DejaVu Sans', 'Liberation Sans', 'sans-serif']
+    
+    plt.rcParams['axes.unicode_minus'] = False
+    return korean_font
 
-# Visualization
+# Set up visualization
+setup_korean_font()
 plt.style.use('default')
 sns.set_palette("husl")
 
-class ClassImbalanceModel:
-    """Class Imbalance Strategy Comparison for Credit Risk Prediction"""
+def load_and_prepare_step4_data():
+    """Load and prepare Step 4 data with proper temporal sorting"""
+    print("🚀 CORRECTED TEMPORAL VALIDATION")
+    print("=" * 50)
+    print("📂 Loading Step 4 Optimized Dataset")
+    print("-" * 40)
     
-    def __init__(self):
-        """Initialize the model with configuration"""
-        self.config = {
-            'data_path': 'dataset/credit_risk_dataset.csv',
-            'temporal_column': '보험청약일자',
-            'target_columns': ['risk_year1', 'risk_year2', 'risk_year3', 'risk_year4'],
-            'exclude_columns': [
-                '사업자등록번호',
-                '대상자명',
-                '대상자등록이력일시',
-                '대상자기본주소',
-                '청약번호',
-                '청약상태코드',
-                '수출자대상자번호',
-                '특별출연협약코드',
-                '업종코드1'
-            ],
-            'train_ratio': 0.8,
-            'random_state': 42,
-            'xgb_params': {
-                'enable_missing': True,
-                'random_state': 42,
-                'verbosity': 0
-            }
-        }
-        
-        # Initialize data containers
-        self.data = None
-        self.baseline_results = {}
-        self.strategy_results = {}
-        self.best_strategy = None
-        
-        # Create results directory
-        self.results_dir = 'result/step5_imbalance'
-        self._create_results_directory()
-        
-    def _create_results_directory(self):
-        """Create results directory if it doesn't exist"""
-        os.makedirs(self.results_dir, exist_ok=True)
-        os.makedirs(f'{self.results_dir}/plots', exist_ok=True)
-        os.makedirs(f'{self.results_dir}/models', exist_ok=True)
-        
-    def load_data_and_baseline(self) -> Tuple[pd.DataFrame, Dict]:
-        """Load data and Step 4 baseline results"""
-        print("\n" + "="*60)
-        print("1️⃣ DATA LOADING & BASELINE ANALYSIS")
-        print("="*60)
-        
-        # Load dataset
-        print("📊 Loading dataset...")
-        self.data = pd.read_csv(self.config['data_path'])
-        print(f"✅ Dataset loaded: {len(self.data):,} records, {len(self.data.columns)} features")
-        
-        # Load Step 4 baseline results
-        baseline_path = 'result/step4_temporal/step4_results.json'
-        if os.path.exists(baseline_path):
-            with open(baseline_path, 'r', encoding='utf-8') as f:
-                self.baseline_results = json.load(f)
-            print("✅ Step 4 baseline results loaded")
-        else:
-            print("⚠️  Step 4 results not found. Will create baseline from scratch.")
-            self.baseline_results = {}
-        
-        # Temporal column setup
-        temporal_col = self.config['temporal_column']
-        if temporal_col in self.data.columns:
-            self.data[temporal_col] = pd.to_datetime(self.data[temporal_col], errors='coerce')
-            print(f"✅ Temporal column converted: {temporal_col}")
-        else:
-            raise ValueError(f"Temporal column '{temporal_col}' not found in dataset")
-        
-        return self.data, self.baseline_results
+    # Load dataset from Step 4
+    df = pd.read_csv('dataset/credit_risk_dataset_step4.csv')
+    print(f"✅ Step 4 dataset loaded: {df.shape}")
     
-    def implement_temporal_split(self) -> Tuple[pd.DataFrame, pd.DataFrame, Dict, Dict]:
-        """Implement temporal train/test split (exact same as Step 4)"""
-        print("\n" + "="*60)
-        print("2️⃣ TEMPORAL SPLIT (EXACT SAME AS STEP 4)")
-        print("="*60)
-        
-        # Sort data chronologically by temporal column
-        temporal_col = self.config['temporal_column']
-        self.data = self.data.sort_values(temporal_col).reset_index(drop=True)
-        
-        # Convert temporal column to datetime if needed
-        if not pd.api.types.is_datetime64_any_dtype(self.data[temporal_col]):
-            self.data[temporal_col] = pd.to_datetime(self.data[temporal_col])
-        
-        # Define cutoff dates for complete prediction periods (same as Step 4)
-        current_date = pd.Timestamp('2025-06-30')
-        
-        # Calculate cutoff dates for each risk year
-        cutoff_dates = {
-            'risk_year1': current_date - pd.DateOffset(years=1),  # 2024-06-30
-            'risk_year2': current_date - pd.DateOffset(years=2),  # 2023-06-30  
-            'risk_year3': current_date - pd.DateOffset(years=3),  # 2022-06-30
-            'risk_year4': current_date - pd.DateOffset(years=4)   # 2021-06-30
-        }
-        
-        print(f"📊 Temporal split configuration:")
-        print(f"   • Current date: {current_date.strftime('%Y-%m-%d')}")
-        print(f"   • Cutoff dates for complete prediction periods:")
-        for target, cutoff in cutoff_dates.items():
-            print(f"     - {target}: {cutoff.strftime('%Y-%m-%d')}")
-        
-        # Use the most restrictive cutoff (risk_year4) for the main split
-        main_cutoff = cutoff_dates['risk_year4']  # 2021-06-30
-        
-        # Filter data to only include contracts before the cutoff (same as Step 4)
-        valid_data = self.data[self.data[temporal_col] <= main_cutoff].copy()
-        
-        print(f"\n📊 Data filtering results:")
-        print(f"   • Original data: {len(self.data):,} records")
-        print(f"   • Valid data (before {main_cutoff.strftime('%Y-%m-%d')}): {len(valid_data):,} records")
-        print(f"   • Excluded data: {len(self.data) - len(valid_data):,} records")
-        
-        # Simple chronological 80/20 split on valid data (same as Step 4)
-        train_ratio = self.config.get('train_ratio', 0.8)
-        train_size = int(len(valid_data) * train_ratio)
-        
-        print(f"\n📊 Temporal split details:")
-        print(f"   • Train records: {train_size:,} ({train_size/len(valid_data):.1%})")
-        print(f"   • Test records: {len(valid_data) - train_size:,} ({(len(valid_data) - train_size)/len(valid_data):.1%})")
-        
-        # Get the actual split date for reporting
-        split_date = valid_data.iloc[train_size-1][temporal_col]
-        print(f"   • Split date: {split_date.strftime('%Y-%m-%d')}")
-        
-        # Split data
-        train_data = valid_data.iloc[:train_size].copy()
-        test_data = valid_data.iloc[train_size:].copy()
-        
-        # Prepare features and targets
-        exclude_cols = self.config.get('exclude_columns', [])
-        target_cols = self.config['target_columns']
-        
-        # Feature columns (exclude targets, excluded columns, and temporal column)
-        feature_cols = [col for col in valid_data.columns 
-                       if col not in target_cols and col not in exclude_cols and col != temporal_col]
-        
-        print(f"\n📊 Feature analysis:")
-        print(f"   • Total features: {len(feature_cols)}")
-        print(f"   • Target variables: {len(target_cols)}")
-        print(f"   • Excluded columns: {len(exclude_cols)}")
-        print(f"   • Temporal column excluded from features: {temporal_col}")
-        
-        # Prepare X and y data
-        X_train = train_data[feature_cols]
-        X_test = test_data[feature_cols]
-        
-        y_train = {}
-        y_test = {}
-        
-        # Prepare target variables
-        print(f"\n🎯 Target variable analysis:")
-        for target in target_cols:
-            # Train set
-            y_train[target] = train_data[target]
-            train_available = y_train[target].notna().sum()
-            train_total = len(y_train[target])
-            
-            # Test set
-            y_test[target] = test_data[target]
-            test_available = y_test[target].notna().sum()
-            test_total = len(y_test[target])
-            
-            print(f"   • {target}:")
-            print(f"     - Train: {train_available:,}/{train_total:,} available ({train_available/train_total:.1%})")
-            print(f"     - Test: {test_available:,}/{test_total:,} available ({test_available/test_total:.1%})")
-        
-        return X_train, X_test, y_train, y_test
+    # CRITICAL: Sort by 보험청약일자 for temporal validation
+    if '보험청약일자' in df.columns:
+        df = df.sort_values('보험청약일자').reset_index(drop=True)
+        print(f"✅ Data sorted by 보험청약일자 for temporal validation")
+    else:
+        print("⚠️ 보험청약일자 not found - using index order for temporal validation")
     
-    def strategy_baseline(self, X_train: pd.DataFrame, X_test: pd.DataFrame, 
-                         y_train: Dict, y_test: Dict) -> Dict:
-        """Strategy 1: No imbalance strategy (baseline from Step 4)"""
-        print("\n" + "="*60)
-        print("3️⃣ STRATEGY 1: BASELINE (NO IMBALANCE STRATEGY)")
-        print("="*60)
-        
-        results = {}
-        
-        for target in self.config['target_columns']:
-            print(f"\n🎯 Training baseline model for {target}...")
-            
-            # Get valid data for this target
-            train_mask = y_train[target].notna()
-            test_mask = y_test[target].notna()
-            
-            X_train_valid = X_train[train_mask].copy()
-            y_train_valid = y_train[target][train_mask].copy()
-            X_test_valid = X_test[test_mask].copy()
-            y_test_valid = y_test[target][test_mask].copy()
-            
-            print(f"   📊 Training samples: {len(X_train_valid):,}")
-            print(f"   📊 Test samples: {len(X_test_valid):,}")
-            
-            # Train model (no imbalance strategy)
-            model = xgb.XGBRegressor(**self.config['xgb_params'])
-            model.fit(X_train_valid, y_train_valid)
-            
-            # Predictions
-            y_pred = model.predict(X_test_valid)
-            y_pred_rounded = np.round(y_pred).astype(int)
-            
-            # Calculate metrics
-            mae = mean_absolute_error(y_test_valid, y_pred)
-            accuracy = accuracy_score(y_test_valid, y_pred_rounded)
-            
-            # Classification metrics
-            f1_macro = f1_score(y_test_valid, y_pred_rounded, average='macro', zero_division=0)
-            recall_avg = recall_score(y_test_valid, y_pred_rounded, average='macro', zero_division=0)
-            
-            # Per-class recall
-            recall_per_class = recall_score(y_test_valid, y_pred_rounded, average=None, zero_division=0)
-            
-            results[target] = {
-                'mae': mae,
-                'accuracy': accuracy,
-                'f1_macro': f1_macro,
-                'recall_avg': recall_avg,
-                'recall_per_class': recall_per_class.tolist(),
-                'predictions': y_pred_rounded.tolist(),
-                'actual': y_test_valid.tolist()
-            }
-            
-            print(f"   ✅ {target} - MAE: {mae:.4f}, F1-Macro: {f1_macro:.4f}, Recall: {recall_avg:.4f}")
-        
-        return results
+    # Define exclude columns (matching step4.py)
+    exclude_cols = [
+        '사업자등록번호', '대상자명', '대상자등록이력일시', '대상자기본주소',
+        '청약번호', '보험청약일자', '청약상태코드', '수출자대상자번호', 
+        '특별출연협약코드', '업종코드1'
+    ]
     
-    def strategy_class_weights(self, X_train: pd.DataFrame, X_test: pd.DataFrame,
-                              y_train: Dict, y_test: Dict) -> Dict:
-        """Strategy 2: Class weights using sample_weight for regression"""
-        print("\n" + "="*60)
-        print("4️⃣ STRATEGY 2: CLASS WEIGHTS (SAMPLE_WEIGHT)")
-        print("="*60)
-        
-        results = {}
-        
-        for target in self.config['target_columns']:
-            print(f"\n🎯 Training class weights model for {target}...")
-            
-            # Get valid data for this target
-            train_mask = y_train[target].notna()
-            test_mask = y_test[target].notna()
-            
-            X_train_valid = X_train[train_mask].copy()
-            y_train_valid = y_train[target][train_mask].copy()
-            X_test_valid = X_test[test_mask].copy()
-            y_test_valid = y_test[target][test_mask].copy()
-            
-            print(f"   📊 Training samples: {len(X_train_valid):,}")
-            print(f"   📊 Test samples: {len(X_test_valid):,}")
-            
-            # Calculate class weights using sample_weight
-            unique_classes = np.array(sorted(y_train_valid.unique()))
-            class_weights = compute_class_weight(
-                'balanced', 
-                classes=unique_classes, 
-                y=y_train_valid
-            )
-            
-            # Create sample weights
-            class_weight_dict = dict(zip(unique_classes, class_weights))
-            sample_weights = [class_weight_dict[int(y)] for y in y_train_valid]
-            
-            print(f"   📊 Class weights: {dict(zip(unique_classes, class_weights))}")
-            
-            # Train model with sample weights
-            model = xgb.XGBRegressor(**self.config['xgb_params'])
-            model.fit(X_train_valid, y_train_valid, sample_weight=sample_weights)
-            
-            # Predictions
-            y_pred = model.predict(X_test_valid)
-            y_pred_rounded = np.round(y_pred).astype(int)
-            
-            # Calculate metrics
-            mae = mean_absolute_error(y_test_valid, y_pred)
-            accuracy = accuracy_score(y_test_valid, y_pred_rounded)
-            f1_macro = f1_score(y_test_valid, y_pred_rounded, average='macro', zero_division=0)
-            recall_avg = recall_score(y_test_valid, y_pred_rounded, average='macro', zero_division=0)
-            recall_per_class = recall_score(y_test_valid, y_pred_rounded, average=None, zero_division=0)
-            
-            results[target] = {
-                'mae': mae,
-                'accuracy': accuracy,
-                'f1_macro': f1_macro,
-                'recall_avg': recall_avg,
-                'recall_per_class': recall_per_class.tolist(),
-                'predictions': y_pred_rounded.tolist(),
-                'actual': y_test_valid.tolist()
-            }
-            
-            print(f"   ✅ {target} - MAE: {mae:.4f}, F1-Macro: {f1_macro:.4f}, Recall: {recall_avg:.4f}")
-        
-        return results
+    # Separate features and targets
+    target_cols = [col for col in df.columns if col.startswith('risk_year')]
+    feature_cols = [col for col in df.columns if col not in target_cols + exclude_cols]
     
-    def strategy_smote(self, X_train: pd.DataFrame, X_test: pd.DataFrame,
-                      y_train: Dict, y_test: Dict) -> Dict:
-        """Strategy 3: SMOTE applied after temporal split (no data leakage)"""
-        print("\n" + "="*60)
-        print("5️⃣ STRATEGY 3: SMOTE (AFTER TEMPORAL SPLIT)")
-        print("="*60)
-        
-        results = {}
-        
-        for target in self.config['target_columns']:
-            print(f"\n🎯 Training SMOTE model for {target}...")
-            
-            # Get valid data for this target
-            train_mask = y_train[target].notna()
-            test_mask = y_test[target].notna()
-            
-            X_train_valid = X_train[train_mask].copy()
-            y_train_valid = y_train[target][train_mask].copy()
-            X_test_valid = X_test[test_mask].copy()
-            y_test_valid = y_test[target][test_mask].copy()
-            
-            print(f"   📊 Original training samples: {len(X_train_valid):,}")
-            print(f"   📊 Test samples: {len(X_test_valid):,}")
-            
-            # Apply SMOTE to training data only (no data leakage)
-            try:
-                # Handle NaN values in features
-                imputer = SimpleImputer(strategy='median')
-                X_train_imputed = imputer.fit_transform(X_train_valid)
-                
-                # Apply SMOTE
-                smote = SMOTE(random_state=self.config['random_state'], k_neighbors=5)
-                X_train_smote, y_train_smote = smote.fit_resample(X_train_imputed, y_train_valid)
-                
-                print(f"   📊 After SMOTE: {len(X_train_smote):,} training samples")
-                print(f"   📊 SMOTE augmentation: +{len(X_train_smote) - len(X_train_valid):,} samples")
-                
-                # Train model with SMOTE-augmented data
-                model = xgb.XGBRegressor(**self.config['xgb_params'])
-                model.fit(X_train_smote, y_train_smote)
-                
-            except Exception as e:
-                print(f"   ⚠️  SMOTE failed for {target}: {str(e)}")
-                print(f"   🔄 Falling back to original training data")
-                
-                # Fallback to original data
-                model = xgb.XGBRegressor(**self.config['xgb_params'])
-                model.fit(X_train_valid, y_train_valid)
-            
-            # Predictions
-            y_pred = model.predict(X_test_valid)
-            y_pred_rounded = np.round(y_pred).astype(int)
-            
-            # Calculate metrics
-            mae = mean_absolute_error(y_test_valid, y_pred)
-            accuracy = accuracy_score(y_test_valid, y_pred_rounded)
-            f1_macro = f1_score(y_test_valid, y_pred_rounded, average='macro', zero_division=0)
-            recall_avg = recall_score(y_test_valid, y_pred_rounded, average='macro', zero_division=0)
-            recall_per_class = recall_score(y_test_valid, y_pred_rounded, average=None, zero_division=0)
-            
-            results[target] = {
-                'mae': mae,
-                'accuracy': accuracy,
-                'f1_macro': f1_macro,
-                'recall_avg': recall_avg,
-                'recall_per_class': recall_per_class.tolist(),
-                'predictions': y_pred_rounded.tolist(),
-                'actual': y_test_valid.tolist()
-            }
-            
-            print(f"   ✅ {target} - MAE: {mae:.4f}, F1-Macro: {f1_macro:.4f}, Recall: {recall_avg:.4f}")
-        
-        return results
+    print(f"📋 Excluded columns: {len(exclude_cols)}")
+    print(f"🎯 Target columns: {len(target_cols)}")
+    print(f"📊 Optimized features: {len(feature_cols)}")
     
-    def compare_strategies(self) -> str:
-        """Compare all strategies and select the best one"""
-        print("\n" + "="*60)
-        print("6️⃣ STRATEGY COMPARISON & SELECTION")
-        print("="*60)
-        
-        # Calculate average performance for each strategy
-        strategy_scores = {}
-        
-        for strategy_name, results in self.strategy_results.items():
-            if not results:
-                continue
-                
-            f1_scores = [results[target]['f1_macro'] for target in self.config['target_columns']]
-            recall_scores = [results[target]['recall_avg'] for target in self.config['target_columns']]
-            
-            avg_f1 = np.mean(f1_scores)
-            avg_recall = np.mean(recall_scores)
-            
-            strategy_scores[strategy_name] = {
-                'avg_f1_macro': avg_f1,
-                'avg_recall': avg_recall,
-                'f1_scores': f1_scores,
-                'recall_scores': recall_scores
-            }
-            
-            print(f"\n📊 {strategy_name.upper()} Performance:")
-            print(f"   • Average F1-Macro: {avg_f1:.4f}")
-            print(f"   • Average Recall: {avg_recall:.4f}")
-            
-            for i, target in enumerate(self.config['target_columns']):
-                print(f"   • {target}: F1={f1_scores[i]:.4f}, Recall={recall_scores[i]:.4f}")
-        
-        # Select best strategy based on F1-Macro (primary metric)
-        if strategy_scores:
-            best_strategy = max(strategy_scores.keys(), 
-                              key=lambda x: strategy_scores[x]['avg_f1_macro'])
-            
-            print(f"\n🏆 BEST STRATEGY: {best_strategy.upper()}")
-            print(f"   • Average F1-Macro: {strategy_scores[best_strategy]['avg_f1_macro']:.4f}")
-            print(f"   • Average Recall: {strategy_scores[best_strategy]['avg_recall']:.4f}")
-            
-            # Improvement over baseline
-            if 'baseline' in strategy_scores:
-                baseline_f1 = strategy_scores['baseline']['avg_f1_macro']
-                improvement = ((strategy_scores[best_strategy]['avg_f1_macro'] - baseline_f1) / baseline_f1) * 100
-                print(f"   • Improvement over baseline: {improvement:+.2f}%")
-            
-            self.best_strategy = best_strategy
-            return best_strategy
-        else:
-            print("❌ No valid strategy results to compare")
-            return None
+    # Show target availability
+    print(f"\n🎯 Target Variable Availability:")
+    for target in target_cols:
+        non_null_count = df[target].notna().sum()
+        print(f"   • {target}: {non_null_count:,} records ({non_null_count/len(df)*100:.1f}%)")
     
-    def create_visualizations(self):
-        """Create comparison visualizations"""
-        print("\n" + "="*60)
-        print("7️⃣ CREATING VISUALIZATIONS")
-        print("="*60)
-        
-        if not self.strategy_results:
-            print("⚠️  No strategy results available for visualization")
-            return
-        
-        # 1. F1-Macro Comparison
-        self._plot_f1_comparison()
-        
-        # 2. Recall Comparison
-        self._plot_recall_comparison()
-        
-        # 3. Confusion Matrix for Best Strategy
-        self._plot_confusion_matrices()
-        
-        print("✅ All visualizations created successfully")
+    X = df[feature_cols]
+    y = df[target_cols]
     
-    def _plot_f1_comparison(self):
-        """Plot F1-Macro comparison across strategies"""
-        strategies = list(self.strategy_results.keys())
-        targets = self.config['target_columns']
-        
-        # Prepare data
-        f1_data = []
-        for strategy in strategies:
-            if strategy in self.strategy_results:
-                for target in targets:
-                    f1_data.append({
-                        'Strategy': strategy.replace('_', ' ').title(),
-                        'Target': target,
-                        'F1-Macro': self.strategy_results[strategy][target]['f1_macro']
-                    })
-        
-        if not f1_data:
-            return
-        
-        df_f1 = pd.DataFrame(f1_data)
-        
-        # Create plot
-        plt.figure(figsize=(12, 6))
-        sns.barplot(data=df_f1, x='Target', y='F1-Macro', hue='Strategy')
-        plt.title('F1-Macro Score Comparison Across Strategies', fontsize=14, fontweight='bold')
-        plt.xlabel('Target Variable', fontsize=12)
-        plt.ylabel('F1-Macro Score', fontsize=12)
-        plt.legend(title='Strategy', bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        plt.savefig(f'{self.results_dir}/plots/f1_macro_comparison.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print("   ✅ F1-Macro comparison plot saved")
+    return df, X, y, exclude_cols, target_cols
+
+def approach1_random_split(X, y, test_size=0.2):
+    """Approach 1: Random Split (shuffle=True) - Performance baseline ignoring temporal characteristics"""
+    print(f"\n📊 Approach 1: Random Split (test_size={test_size})")
+    print("-" * 60)
+    print("🎯 Purpose: Performance baseline when ignoring time-series characteristics")
     
-    def _plot_recall_comparison(self):
-        """Plot recall comparison for minority classes"""
-        strategies = list(self.strategy_results.keys())
-        targets = self.config['target_columns']
-        
-        # Prepare data for minority classes (1, 2, 3)
-        recall_data = []
-        for strategy in strategies:
-            if strategy in self.strategy_results:
-                for target in targets:
-                    recall_per_class = self.strategy_results[strategy][target]['recall_per_class']
-                    for class_idx, recall in enumerate(recall_per_class):
-                        if class_idx > 0:  # Only minority classes
-                            recall_data.append({
-                                'Strategy': strategy.replace('_', ' ').title(),
-                                'Target': target,
-                                'Class': f'Class {class_idx}',
-                                'Recall': recall
-                            })
-        
-        if not recall_data:
-            return
-        
-        df_recall = pd.DataFrame(recall_data)
-        
-        # Create plot using catplot (supports col parameter)
-        plt.figure(figsize=(16, 10))
-        g = sns.catplot(
-            data=df_recall, 
-            x='Target', 
-            y='Recall', 
-            hue='Strategy', 
-            col='Class',
-            kind='bar',
-            height=4,
-            aspect=1.2
+    # Use first target for validation
+    y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
+    
+    # Remove NaN targets
+    mask = ~pd.isna(y_single)
+    X_clean = X[mask]
+    y_clean = y_single[mask]
+    
+    # Get numeric features
+    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    
+    if len(X_numeric.columns) == 0:
+        print("⚠️ No numeric features for validation")
+        return None
+    
+    # Random train/test split (shuffle=True)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_numeric, y_clean, test_size=test_size, random_state=42, shuffle=True
+    )
+    
+    print(f"   • Training samples: {len(X_train):,}")
+    print(f"   • Test samples: {len(X_test):,}")
+    print(f"   • Features: {X_train.shape[1]}")
+    
+    # Train and evaluate
+    model = xgb.XGBClassifier(
+        n_estimators=100,
+        random_state=42,
+        verbosity=0,
+        n_jobs=-1,
+        tree_method='hist',
+        eval_metric='mlogloss'
+    )
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    
+    # Calculate metrics
+    metrics = {
+        'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
+        'accuracy': accuracy_score(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
+        'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+    }
+    
+    print(f"   🎯 F1-Score (Macro): {metrics['f1_macro']:.4f}")
+    print(f"   📈 Accuracy: {metrics['accuracy']:.4f}")
+    
+    return {
+        'approach': 'Random Split',
+        'description': 'Performance baseline ignoring temporal characteristics',
+        'metrics': metrics,
+        'train_samples': len(X_train),
+        'test_samples': len(X_test),
+        'features': X_train.shape[1]
+    }
+
+def approach2_stratified_random_split(X, y, test_size=0.2):
+    """Approach 2: Stratified Random Split (shuffle=True, stratify=y) - Baseline with class balance"""
+    print(f"\n📊 Approach 2: Stratified Random Split (test_size={test_size})")
+    print("-" * 60)
+    print("🎯 Purpose: Baseline with class balance (non-temporal)")
+    
+    # Use first target for validation
+    y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
+    
+    # Remove NaN targets
+    mask = ~pd.isna(y_single)
+    X_clean = X[mask]
+    y_clean = y_single[mask]
+    
+    # Get numeric features
+    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    
+    if len(X_numeric.columns) == 0:
+        print("⚠️ No numeric features for validation")
+        return None
+    
+    # Stratified random split (shuffle=True, stratify)
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_numeric, y_clean, test_size=test_size, random_state=42, shuffle=True, stratify=y_clean
         )
-        g.fig.suptitle('Recall for Minority Classes Across Strategies', fontsize=16, fontweight='bold', y=1.02)
-        g.fig.tight_layout()
-        plt.savefig(f'{self.results_dir}/plots/recall_comparison.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print("   ✅ Recall comparison plot saved")
+    except ValueError as e:
+        print(f"⚠️ Stratified split failed ({e}); falling back to non-stratified random split")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_numeric, y_clean, test_size=test_size, random_state=42, shuffle=True
+        )
     
-    def _plot_confusion_matrices(self):
-        """Plot confusion matrices for best strategy"""
-        if not self.best_strategy or self.best_strategy not in self.strategy_results:
-            return
-        
-        results = self.strategy_results[self.best_strategy]
-        targets = self.config['target_columns']
-        
-        # Create subplot grid
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle(f'Confusion Matrices - Best Strategy: {self.best_strategy.upper()}', 
-                    fontsize=16, fontweight='bold')
-        
-        for i, target in enumerate(targets):
-            row, col = i // 2, i % 2
-            ax = axes[row, col]
-            
-            # Get predictions and actual values
-            y_pred = results[target]['predictions']
-            y_actual = results[target]['actual']
-            
-            # Create confusion matrix
-            cm = confusion_matrix(y_actual, y_pred)
-            
-            # Plot
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
-            ax.set_title(f'{target}', fontweight='bold')
-            ax.set_xlabel('Predicted')
-            ax.set_ylabel('Actual')
-        
-        plt.tight_layout()
-        plt.savefig(f'{self.results_dir}/plots/confusion_matrices.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print("   ✅ Confusion matrices plot saved")
+    print(f"   • Training samples: {len(X_train):,}")
+    print(f"   • Test samples: {len(X_test):,}")
+    print(f"   • Features: {X_train.shape[1]}")
     
-    def save_results(self):
-        """Save all results and summary"""
-        print("\n" + "="*60)
-        print("8️⃣ SAVING RESULTS")
-        print("="*60)
+    # Train and evaluate
+    model = xgb.XGBClassifier(
+        n_estimators=100,
+        random_state=42,
+        verbosity=0,
+        n_jobs=-1,
+        tree_method='hist',
+        eval_metric='mlogloss'
+    )
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    
+    # Calculate metrics
+    metrics = {
+        'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
+        'accuracy': accuracy_score(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
+        'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+    }
+    
+    print(f"   🎯 F1-Score (Macro): {metrics['f1_macro']:.4f}")
+    print(f"   📈 Accuracy: {metrics['accuracy']:.4f}")
+    
+    return {
+        'approach': 'Stratified Random Split',
+        'description': 'Baseline with class balance (non-temporal)',
+        'metrics': metrics,
+        'train_samples': len(X_train),
+        'test_samples': len(X_test),
+        'features': X_train.shape[1]
+    }
+
+def approach3_temporal_holdout(X, y, test_size=0.2):
+    """Approach 3: Simple Temporal Holdout (shuffle=False) - Basic temporal validation (past vs future)"""
+    print(f"\n📊 Approach 3: Simple Temporal Holdout (test_size={test_size})")
+    print("-" * 60)
+    print("🎯 Purpose: Basic temporal validation separating past from future")
+
+    # Use first target for validation
+    y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
+
+    # Remove NaN targets
+    mask = ~pd.isna(y_single)
+    X_clean = X[mask]
+    y_clean = y_single[mask]
+
+    # Get numeric features
+    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+
+    if len(X_numeric.columns) == 0:
+        print("⚠️ No numeric features for validation")
+        return None
+
+    # Temporal train/test split (shuffle=False)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_numeric, y_clean, test_size=test_size, random_state=42, shuffle=False
+    )
+
+    print(f"   • Training samples: {len(X_train):,} (earlier data)")
+    print(f"   • Test samples: {len(X_test):,} (later data)")
+    print(f"   • Features: {X_train.shape[1]}")
+
+    # Train and evaluate
+    model = xgb.XGBClassifier(
+        n_estimators=100,
+        random_state=42,
+        verbosity=0,
+        n_jobs=-1,
+        tree_method='hist',
+        eval_metric='mlogloss'
+    )
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    # Calculate metrics
+    metrics = {
+        'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
+        'accuracy': accuracy_score(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
+        'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+    }
+
+    print(f"   🎯 F1-Score (Macro): {metrics['f1_macro']:.4f}")
+    print(f"   📈 Accuracy: {metrics['accuracy']:.4f}")
+
+    return {
+        'approach': 'Simple Temporal Holdout',
+        'description': 'Basic temporal validation separating past from future',
+        'metrics': metrics,
+        'train_samples': len(X_train),
+        'test_samples': len(X_test),
+        'features': X_train.shape[1]
+    }
+
+def approach3_expanding_window_cv(X, y, n_splits=5):
+    """Approach 3: Expanding Window CV - Evaluates stability as more data accumulates"""
+    print(f"\n📊 Approach 3: Expanding Window CV (n_splits={n_splits})")
+    print("-" * 60)
+    print("🎯 Purpose: Evaluates stability as more data accumulates over time")
+    
+    # Use first target for validation
+    y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
+    
+    # Remove NaN targets
+    mask = ~pd.isna(y_single)
+    X_clean = X[mask]
+    y_clean = y_single[mask]
+    
+    # Get numeric features
+    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    
+    if len(X_numeric.columns) == 0:
+        print("⚠️ No numeric features for validation")
+        return None
+    
+    # Use TimeSeriesSplit for expanding window
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    
+    metrics_list = []
+    train_sizes = []
+    
+    print(f"   • Total samples: {len(X_numeric):,}")
+    print(f"   • Features: {X_numeric.shape[1]}")
+    
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X_numeric)):
+        X_train, X_test = X_numeric.iloc[train_idx], X_numeric.iloc[test_idx]
+        y_train, y_test = y_clean.iloc[train_idx], y_clean.iloc[test_idx]
         
-        # Prepare results summary
-        summary = {
-            'timestamp': datetime.now().isoformat(),
-            'best_strategy': self.best_strategy,
-            'strategy_comparison': {},
-            'target_performance': {},
-            'configuration': self.config
+        train_sizes.append(len(X_train))
+        
+        # Train and evaluate
+        model = xgb.XGBClassifier(
+            n_estimators=100,
+            random_state=42,
+            verbosity=0,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='mlogloss'
+        )
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        
+        # Calculate metrics
+        metrics = {
+            'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
+            'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
         }
+        metrics_list.append(metrics)
         
-        # Strategy comparison
-        for strategy_name, results in self.strategy_results.items():
-            if results:
-                f1_scores = [results[target]['f1_macro'] for target in self.config['target_columns']]
-                recall_scores = [results[target]['recall_avg'] for target in self.config['target_columns']]
-                
-                summary['strategy_comparison'][strategy_name] = {
-                    'avg_f1_macro': np.mean(f1_scores),
-                    'avg_recall': np.mean(recall_scores),
-                    'f1_scores': f1_scores,
-                    'recall_scores': recall_scores
-                }
-        
-        # Target performance for best strategy
-        if self.best_strategy and self.best_strategy in self.strategy_results:
-            best_results = self.strategy_results[self.best_strategy]
-            for target in self.config['target_columns']:
-                summary['target_performance'][target] = {
-                    'mae': best_results[target]['mae'],
-                    'accuracy': best_results[target]['accuracy'],
-                    'f1_macro': best_results[target]['f1_macro'],
-                    'recall_avg': best_results[target]['recall_avg'],
-                    'recall_per_class': best_results[target]['recall_per_class']
-                }
-        
-        # Save summary
-        with open(f'{self.results_dir}/step5_results.json', 'w', encoding='utf-8') as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
-        
-        # Save detailed results
-        with open(f'{self.results_dir}/step5_detailed_results.json', 'w', encoding='utf-8') as f:
-            json.dump(self.strategy_results, f, indent=2, ensure_ascii=False)
-        
-        print("✅ Results saved successfully")
-        print(f"   📁 Summary: {self.results_dir}/step5_results.json")
-        print(f"   📁 Detailed: {self.results_dir}/step5_detailed_results.json")
-        
-        # Print final summary
-        print(f"\n🎯 STEP 5 COMPLETED SUCCESSFULLY")
-        print(f"   🏆 Best Strategy: {self.best_strategy.upper()}")
-        if self.best_strategy and 'baseline' in summary['strategy_comparison']:
-            baseline_f1 = summary['strategy_comparison']['baseline']['avg_f1_macro']
-            best_f1 = summary['strategy_comparison'][self.best_strategy]['avg_f1_macro']
-            improvement = ((best_f1 - baseline_f1) / baseline_f1) * 100
-            print(f"   📈 Improvement over baseline: {improvement:+.2f}%")
+        print(f"   Fold {fold+1}: Train={len(X_train):,}, Test={len(X_test):,}, F1={metrics['f1_macro']:.4f}")
     
-    def run_step5_pipeline(self):
-        """Run the complete Step 5 pipeline"""
-        print("🚀 STEP 5: CLASS IMBALANCE STRATEGY COMPARISON")
-        print("="*60)
-        print("Goal: Compare imbalance strategies and select the best approach")
-        print("="*60)
+    # Calculate average metrics
+    avg_metrics = {}
+    for key in metrics_list[0].keys():
+        avg_metrics[key] = np.mean([m[key] for m in metrics_list])
+    
+    print(f"   🎯 Average F1-Score (Macro): {avg_metrics['f1_macro']:.4f}")
+    print(f"   📈 Average Accuracy: {avg_metrics['accuracy']:.4f}")
+    
+    return {
+        'approach': 'Expanding Window CV',
+        'description': 'Evaluates stability as more data accumulates over time',
+        'metrics': avg_metrics,
+        'fold_metrics': metrics_list,
+        'train_sizes': train_sizes,
+        'n_splits': n_splits,
+        'features': X_numeric.shape[1]
+    }
+
+def approach4_rolling_window_cv(X, y, window_size=0.6, n_splits=5):
+    """Approach 4: Rolling Window CV - Evaluates adaptation to recent trends"""
+    print(f"\n📊 Approach 4: Rolling Window CV (window_size={window_size}, n_splits={n_splits})")
+    print("-" * 60)
+    print("🎯 Purpose: Evaluates adaptation to recent trends by discarding old data")
+    
+    # Use first target for validation
+    y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
+    
+    # Remove NaN targets
+    mask = ~pd.isna(y_single)
+    X_clean = X[mask]
+    y_clean = y_single[mask]
+    
+    # Get numeric features
+    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    
+    if len(X_numeric.columns) == 0:
+        print("⚠️ No numeric features for validation")
+        return None
+    
+    total_samples = len(X_numeric)
+    window_samples = int(total_samples * window_size)
+    step_size = (total_samples - window_samples) // n_splits
+    
+    print(f"   • Total samples: {total_samples:,}")
+    print(f"   • Window size: {window_samples:,} samples")
+    print(f"   • Step size: {step_size:,} samples")
+    print(f"   • Features: {X_numeric.shape[1]}")
+    
+    metrics_list = []
+    train_sizes = []
+    
+    for fold in range(n_splits):
+        start_idx = fold * step_size
+        end_idx = start_idx + window_samples
         
-        try:
-            # Step 1: Load data and baseline
-            self.data, self.baseline_results = self.load_data_and_baseline()
+        if end_idx >= total_samples:
+            break
             
-            # Step 2: Implement temporal split
-            X_train, X_test, y_train, y_test = self.implement_temporal_split()
+        train_idx = list(range(start_idx, end_idx))
+        test_idx = list(range(end_idx, min(end_idx + step_size, total_samples)))
+        
+        if len(test_idx) == 0:
+            break
             
-            # Step 3: Strategy 1 - Baseline (no imbalance strategy)
-            self.strategy_results['baseline'] = self.strategy_baseline(X_train, X_test, y_train, y_test)
+        X_train, X_test = X_numeric.iloc[train_idx], X_numeric.iloc[test_idx]
+        y_train, y_test = y_clean.iloc[train_idx], y_clean.iloc[test_idx]
+        
+        train_sizes.append(len(X_train))
+        
+        # Train and evaluate
+        model = xgb.XGBClassifier(
+            n_estimators=100,
+            random_state=42,
+            verbosity=0,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='mlogloss'
+        )
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        
+        # Calculate metrics
+        metrics = {
+            'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
+            'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+        }
+        metrics_list.append(metrics)
+        
+        print(f"   Fold {fold+1}: Train={len(X_train):,}, Test={len(X_test):,}, F1={metrics['f1_macro']:.4f}")
+    
+    if not metrics_list:
+        print("⚠️ No valid folds generated")
+        return None
+    
+    # Calculate average metrics
+    avg_metrics = {}
+    for key in metrics_list[0].keys():
+        avg_metrics[key] = np.mean([m[key] for m in metrics_list])
+    
+    print(f"   🎯 Average F1-Score (Macro): {avg_metrics['f1_macro']:.4f}")
+    print(f"   📈 Average Accuracy: {avg_metrics['accuracy']:.4f}")
+    
+    return {
+        'approach': 'Rolling Window CV',
+        'description': 'Evaluates adaptation to recent trends by discarding old data',
+        'metrics': avg_metrics,
+        'fold_metrics': metrics_list,
+        'train_sizes': train_sizes,
+        'n_splits': len(metrics_list),
+        'features': X_numeric.shape[1]
+    }
+
+def test_all_approaches_for_target(X, y, target_name):
+    """Test all 5 validation approaches for a specific target"""
+    print(f"\n🎯 TESTING ALL APPROACHES FOR {target_name}")
+    print("=" * 70)
+    
+    # Filter data for this specific target
+    mask = ~pd.isna(y[target_name])
+    X_target = X[mask]
+    y_target = y[target_name][mask]
+    
+    print(f"📊 Available data for {target_name}: {len(X_target):,} samples")
+    
+    # Test all 5 approaches
+    results = {}
+
+    # Approach 1: Random Split
+    results['random_split'] = approach1_random_split(X_target, y_target, test_size=0.2)
+
+    # Approach 2: Stratified Random Split
+    results['stratified_random'] = approach2_stratified_random_split(X_target, y_target, test_size=0.2)
+
+    # Approach 3: Simple Temporal Holdout
+    results['temporal_holdout'] = approach3_temporal_holdout(X_target, y_target, test_size=0.2)
+
+    # Approach 4: Expanding Window CV
+    results['expanding_window'] = approach3_expanding_window_cv(X_target, y_target, n_splits=5)
+
+    # Approach 5: Rolling Window CV
+    results['rolling_window'] = approach4_rolling_window_cv(X_target, y_target, window_size=0.6, n_splits=5)
+    
+    return results
+
+def create_comprehensive_visualization(all_results, results_dir):
+    """Create comprehensive visualization for all targets and approaches"""
+    print(f"\n📊 Creating Comprehensive Visualizations")
+    print("-" * 50)
+    
+    # Create results directory
+    os.makedirs(results_dir, exist_ok=True)
+    
+    if not all_results:
+        print("⚠️ No results to visualize")
+        return
+    
+    # Extract data for visualization
+    targets = list(all_results.keys())
+    approaches = ['Random Split', 'Stratified Random Split', 'Simple Temporal Holdout', 'Expanding Window CV', 'Rolling Window CV']
+    
+    # Create F1-Score comparison across all targets
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Step 5: Temporal Validation Strategy Comparison - All Targets', fontsize=16, fontweight='bold')
+    
+    for idx, target in enumerate(targets):
+        ax = [ax1, ax2, ax3, ax4][idx]
+        
+        f1_scores = []
+        approach_names = []
+        
+        for approach_key in ['random_split', 'stratified_random', 'temporal_holdout', 'expanding_window', 'rolling_window']:
+            if all_results[target][approach_key] is not None:
+                f1_scores.append(all_results[target][approach_key]['metrics']['f1_macro'])
+                approach_names.append(all_results[target][approach_key]['approach'])
+        
+        if f1_scores:
+            color_palette = ['lightcoral', 'lightblue', 'plum', 'lightgreen', 'gold']
+            bars = ax.bar(approach_names, f1_scores, color=color_palette[:len(approach_names)], alpha=0.8)
+            ax.set_ylabel('F1-Score (Macro)')
+            ax.set_title(f'{target} Performance Comparison')
+            ax.grid(True, alpha=0.3)
             
-            # Step 4: Strategy 2 - Class weights
-            self.strategy_results['class_weights'] = self.strategy_class_weights(X_train, X_test, y_train, y_test)
+            # Add value labels
+            for bar in bars:
+                height = bar.get_height()
+                ax.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                            xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
             
-            # Step 5: Strategy 3 - SMOTE
-            self.strategy_results['smote'] = self.strategy_smote(X_train, X_test, y_train, y_test)
-            
-            # Step 6: Compare strategies and select best
-            self.compare_strategies()
-            
-            # Step 7: Create visualizations
-            self.create_visualizations()
-            
-            # Step 8: Save results
-            self.save_results()
-            
-            print(f"\n🎉 STEP 5 COMPLETED SUCCESSFULLY!")
-            print(f"   📊 Compared 3 imbalance strategies")
-            print(f"   🏆 Selected best strategy: {self.best_strategy.upper()}")
-            print(f"   📁 Results saved to: {self.results_dir}")
-            
-        except Exception as e:
-            print(f"\n❌ ERROR in Step 5: {str(e)}")
-            raise
+            # Rotate x-axis labels
+            ax.tick_params(axis='x', rotation=45)
+    
+    plt.tight_layout()
+    plt.savefig(f'{results_dir}/step5_comprehensive_comparison.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print("✅ Comprehensive visualization created successfully")
+
+def select_best_unified_approach(all_results):
+    """Select the best unified validation approach across all targets"""
+    print(f"\n🎯 SELECTING BEST UNIFIED VALIDATION APPROACH")
+    print("-" * 60)
+    
+    # Calculate average performance for each approach across all targets
+    approach_scores = {
+        'Random Split': [],
+        'Stratified Random Split': [],
+        'Simple Temporal Holdout': [],
+        'Expanding Window CV': [],
+        'Rolling Window CV': []
+    }
+    
+    print("📊 Performance Summary by Approach:")
+    print("-" * 40)
+    
+    for target, results in all_results.items():
+        print(f"\n🎯 {target}:")
+        for approach_key, approach_name in [
+            ('random_split', 'Random Split'),
+            ('stratified_random', 'Stratified Random Split'),
+            ('temporal_holdout', 'Simple Temporal Holdout'),
+            ('expanding_window', 'Expanding Window CV'),
+            ('rolling_window', 'Rolling Window CV')
+        ]:
+            if results[approach_key] is not None:
+                f1_score = results[approach_key]['metrics']['f1_macro']
+                approach_scores[approach_name].append(f1_score)
+                print(f"   • {approach_name}: {f1_score:.4f}")
+    
+    # Calculate average and stability metrics
+    approach_summary = {}
+    for approach, scores in approach_scores.items():
+        if scores:
+            approach_summary[approach] = {
+                'mean_f1': np.mean(scores),
+                'std_f1': np.std(scores),
+                'min_f1': np.min(scores),
+                'max_f1': np.max(scores),
+                'stability_score': np.mean(scores) - np.std(scores)  # Higher is better
+            }
+    
+    # Sort by stability score (prioritizing consistency over peak performance)
+    sorted_approaches = sorted(approach_summary.items(), 
+                              key=lambda x: x[1]['stability_score'], reverse=True)
+    
+    print(f"\n🏆 APPROACH RANKING (by Stability Score):")
+    print("-" * 50)
+    for i, (approach, metrics) in enumerate(sorted_approaches, 1):
+        print(f"   {i}. {approach}:")
+        print(f"      • Mean F1-Score: {metrics['mean_f1']:.4f}")
+        print(f"      • Std F1-Score: {metrics['std_f1']:.4f}")
+        print(f"      • Range: {metrics['min_f1']:.4f} - {metrics['max_f1']:.4f}")
+        print(f"      • Stability Score: {metrics['stability_score']:.4f}")
+    
+    best_approach = sorted_approaches[0][0]
+    best_metrics = sorted_approaches[0][1]
+    
+    print(f"\n🏆 SELECTED UNIFIED APPROACH: {best_approach}")
+    print(f"   🎯 Mean F1-Score: {best_metrics['mean_f1']:.4f}")
+    print(f"   📊 Stability Score: {best_metrics['stability_score']:.4f}")
+    print(f"   📈 Performance Range: {best_metrics['min_f1']:.4f} - {best_metrics['max_f1']:.4f}")
+    
+    return {
+        'best_approach': best_approach,
+        'approach_summary': approach_summary,
+        'all_results': all_results
+    }
+
+def save_results(all_results, best_selection, results_dir):
+    """Save comprehensive results and summary"""
+    print(f"\n💾 Saving Comprehensive Results")
+    print("-" * 40)
+    
+    # Create results directory
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # Save detailed results
+    with open(f'{results_dir}/step5_comprehensive_results.json', 'w', encoding='utf-8') as f:
+        json.dump(all_results, f, indent=2, ensure_ascii=False)
+    
+    # Save summary
+    summary = {
+        'execution_date': datetime.now().isoformat(),
+        'approach': 'corrected_temporal_validation',
+        'targets_tested': len(all_results),
+        'strategies_tested': 5,
+        'best_unified_approach': best_selection['best_approach'],
+        'approach_summary': best_selection['approach_summary'],
+        'key_insights': {
+            'data_sorted': 'Data sorted by 보험청약일자 for temporal validation',
+            'consistent_parameters': 'Same split ratios and fold counts across all targets',
+            'unified_strategy': 'One best approach selected for all targets',
+            'stability_priority': 'Stability and consistency prioritized over peak performance'
+        }
+    }
+    
+    with open(f'{results_dir}/step5_summary.json', 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    
+    print(f"✅ Results saved to: {results_dir}")
+    print(f"   📄 Comprehensive results: step5_comprehensive_results.json")
+    print(f"   📋 Summary: step5_summary.json")
+    print(f"   📊 Visualization: step5_comprehensive_comparison.png")
+    
+    return results_dir
 
 def main():
-    """Main execution function"""
-    model = ClassImbalanceModel()
-    model.run_step5_pipeline()
+    """Main execution - Corrected Temporal Validation"""
+    
+    # Load and prepare Step 4 data with proper temporal sorting
+    df, X, y, exclude_cols, target_cols = load_and_prepare_step4_data()
+    
+    print(f"\n🔬 CORRECTED TEMPORAL VALIDATION ENGINE")
+    print("=" * 60)
+    print(f"📊 Testing 4 validation strategies across {len(target_cols)} targets")
+    print(f"🎯 Targets: {target_cols}")
+    print(f"📈 Features: {X.shape[1]}")
+    print(f"📅 Data sorted by 보험청약일자 for temporal validation")
+    
+    # Test all approaches for each target
+    all_results = {}
+    
+    for target_name in target_cols:
+        results = test_all_approaches_for_target(X, y, target_name)
+        all_results[target_name] = results
+    
+    # Create comprehensive visualization
+    results_dir = 'result/step5_temporal_validation'
+    create_comprehensive_visualization(all_results, results_dir)
+    
+    # Select best unified approach
+    best_selection = select_best_unified_approach(all_results)
+    
+    # Save results
+    save_results(all_results, best_selection, results_dir)
+    
+    print(f"\n🎉 CORRECTED TEMPORAL VALIDATION COMPLETED!")
+    print("=" * 60)
+    print("✅ All 4 validation strategies tested across all targets")
+    print("✅ Data properly sorted for temporal validation")
+    print("✅ Consistent parameters maintained across targets")
+    print("✅ Best unified approach selected for all targets")
+    print(f"✅ Results saved in: {results_dir}")
+    
+    return best_selection
 
 if __name__ == "__main__":
-    main()
+    best_validation = main() 

@@ -50,7 +50,7 @@ class DatasetCreator:
             - No join_columns specified for market-level data
             
             X variable processing modes:
-            - 'lookback': Creates multiple time periods (t0, t1, t2, etc.) using time slice approach
+            - 'lookback': Creates multiple time periods information using time slice approach
                          Each period uses data from distinct, non-overlapping time windows
             - 'nearest': Finds N most recent data points within a fixed time window
             - 'static': Simple firm ID join without temporal processing (no date column needed)
@@ -489,23 +489,31 @@ class DatasetCreator:
                               feature_cols: List[str], lookback: int, contract_date_col: str, 
                               base_table_join_col: str, x_date_col: str, x_table_join_col: str, aggregation: str, interval_days: int):
         """
-        Optimized lookback mode processing with time slice approach (non-cumulative)
-        
-        Each period t0, t1, t2... uses data from a specific time slice:
-        - t0: data from [contract_date - interval_days, contract_date] 
-        - t1: data from [contract_date - 2*interval_days, contract_date - interval_days]
-        - t2: data from [contract_date - 3*interval_days, contract_date - 2*interval_days]
-        
-        This prevents temporal leakage between periods and provides distinct time windows.
+        Lookback mode with time slice approach and change-rate features
+
+        Time slices (non-cumulative):
+        - t0: [contract_date - interval_days, contract_date]
+        - t1: (contract_date - 2*interval_days, contract_date - interval_days]
+        - t2: (contract_date - 3*interval_days, contract_date - 2*interval_days]
+
+        Feature outputs:
+        - Raw level for t0 only: {data_type}_{feature}_t0
+        - Change-rate for later slices vs t0: {data_type}_{feature}_변화율_{k}{unit}, k=1..lookback-1
+          where unit in {y,q,m,w,d} according to the configured interval
         """
-        # Pre-initialize all feature columns to avoid repeated column creation
-        feature_names = []
-        for period in range(lookback):
-            for col in feature_cols:
-                feature_name = f"{data_type}_{col}_t{period}"
-                feature_names.append(feature_name)
-                if feature_name not in result_df.columns:
-                    result_df[feature_name] = np.nan
+        # Determine unit label used in 변화율 column names
+        unit_label = self._get_interval_unit_label(data_type, self.config.get('x_period_intervals', {}))
+
+        # Pre-initialize columns: t0 raw + change-rate columns for k>=1
+        for col in feature_cols:
+            t0_name = f"{data_type}_{col}_t0"
+            if t0_name not in result_df.columns:
+                result_df[t0_name] = np.nan
+            # Initialize 변화율 columns for k = 1..lookback-1
+            for k in range(1, max(lookback, 1)):
+                rate_col = f"{data_type}_{col}_변화율_{k}{unit_label}"
+                if rate_col not in result_df.columns:
+                    result_df[rate_col] = np.nan
         
         # Get unique contract dates and firm IDs to optimize queries
         contract_dates = result_df[contract_date_col].unique()
@@ -547,25 +555,54 @@ class DatasetCreator:
                 if len(firm_data) == 0:
                     continue  # No data for this firm
                 
-                # Process all periods for this contract using TIME SLICE approach
+                # Compute aggregated values for all periods first (t0..t{lookback-1})
+                period_to_values: Dict[int, Dict[str, float]] = {}
                 for period in range(lookback):
-                    # Define specific time slice boundaries (non-cumulative)
                     period_end_date = effective_contract_date - timedelta(days=interval_days * period)
                     period_start_date = effective_contract_date - timedelta(days=interval_days * (period + 1))
-                    
-                    # Filter to data within this specific time slice only
                     period_data = firm_data[
-                        (firm_data[x_date_col] <= period_end_date) & 
+                        (firm_data[x_date_col] <= period_end_date) &
                         (firm_data[x_date_col] > period_start_date)
                     ]
-                    
-                    # Apply aggregation
-                    aggregated_values = self._aggregate_data(period_data, feature_cols, aggregation)
-                    
-                    # Set values for all features in this period
+                    period_to_values[period] = self._aggregate_data(period_data, feature_cols, aggregation)
+
+                # Assign t0 raw
+                t0_values = period_to_values.get(0, {})
+                for col in feature_cols:
+                    t0_name = f"{data_type}_{col}_t0"
+                    result_df.loc[contract_idx, t0_name] = t0_values.get(col, np.nan)
+
+                # Assign change-rate for k>=1 vs t0
+                for k in range(1, lookback):
+                    tk_values = period_to_values.get(k, {})
                     for col in feature_cols:
-                        feature_name = f"{data_type}_{col}_t{period}"
-                        result_df.loc[contract_idx, feature_name] = aggregated_values.get(col, np.nan)
+                        current_val = t0_values.get(col, np.nan)
+                        past_val = tk_values.get(col, np.nan)
+                        # Compute rate safely: (current - past) / abs(past)
+                        if pd.isna(current_val) or pd.isna(past_val) or past_val == 0:
+                            rate = np.nan
+                        else:
+                            rate = (current_val - past_val) / abs(past_val)
+                        rate_col = f"{data_type}_{col}_변화율_{k}{unit_label}"
+                        result_df.loc[contract_idx, rate_col] = rate
+
+    def _get_interval_unit_label(self, data_type: str, x_period_intervals: Dict) -> str:
+        """
+        Map interval configuration to a short unit label for column names.
+        - yearly -> 'y', quarterly -> 'q', monthly -> 'm', weekly -> 'w', daily -> 'd'
+        - integer days -> 'd'
+        """
+        interval_config = x_period_intervals.get(data_type, 'monthly')
+        if isinstance(interval_config, int):
+            return 'd'
+        mapping = {
+            'daily': 'd',
+            'weekly': 'w',
+            'monthly': 'm',
+            'quarterly': 'q',
+            'yearly': 'y',
+        }
+        return mapping.get(interval_config, 'm')
     
     def _process_nearest_mode_optimized(self, result_df: pd.DataFrame, x_data: pd.DataFrame, data_type: str,
                              feature_cols: List[str], periods: int, contract_date_col: str,
@@ -796,7 +833,8 @@ class DatasetCreator:
         # X variable summary by type
         x_data_types = set()
         for col in df.columns:
-            if not col.startswith('risk_year') and '_t' in col:
+            # Include t0 features and 변화율 features
+            if not col.startswith('risk_year') and ("_t" in col or "_변화율_" in col):
                 data_type = col.split('_')[0]
                 x_data_types.add(data_type)
         

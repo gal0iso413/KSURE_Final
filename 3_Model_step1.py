@@ -1,17 +1,17 @@
 """
-XGBoost Risk Prediction Model - Step 1: Simple Baseline Model
-============================================================
+XGBoost Risk Prediction Model - Step 1: Classification Baseline Model
+===================================================================
 
-Step 1 Implementation:
+Step 1 Implementation (CLASSIFICATION VERSION):
 - Load data from 1_Dataset.py output
 - Basic data exploration (shape, missing values, target distribution)
-- Create 4 separate XGBoost regression models with default parameters
+- Create 4 separate XGBoost CLASSIFICATION models with default parameters
 - Use simple train/test split (80/20) without considering dates
-- Goal: Establish working pipeline and baseline performance
+- Goal: Establish working pipeline and baseline performance with CLASSIFICATION approach
 
 Design Decisions:
 - 4 Separate Models: One for each risk_year (1,2,3,4)
-- Regression with Rounding: Treat as continuous then round to preserve ordinality
+- CLASSIFICATION: Direct class prediction (0,1,2,3) instead of regression + rounding
 - Native Missing Handling: Let XGBoost handle missing X variables
 - Target-Specific Filtering: Each model uses only rows with valid data for its specific target
 """
@@ -21,7 +21,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, accuracy_score, classification_report
+from sklearn.metrics import mean_absolute_error, f1_score, classification_report, accuracy_score, precision_score, recall_score
 import xgboost as xgb
 from typing import Dict, List, Tuple, Optional
 import warnings
@@ -78,12 +78,12 @@ plt.style.use('default')
 sns.set_palette("husl")
 
 
-class BaselineRiskModel:
+class ClassificationBaselineRiskModel:
     """
-    Step 1: Simple Baseline XGBoost Model for Risk Prediction
+    Step 1: Classification Baseline XGBoost Model for Risk Prediction
     
-    Creates 4 separate regression models for predicting risk at years 1-4.
-    Focuses on establishing working pipeline and baseline performance.
+    Creates 4 separate CLASSIFICATION models for predicting risk at years 1-4.
+    Focuses on establishing working pipeline and baseline performance with CLASSIFICATION approach.
     """
     
     def __init__(self, config: Dict):
@@ -105,9 +105,10 @@ class BaselineRiskModel:
         
         # Create results directory
         self.results_dir = self._create_results_directory()
-        self.korean_font = setup_korean_font()
+        # Font is set at module load; avoid duplicate setup here
+        self.korean_font = None
         
-        print("🚀 Baseline Risk Model Initialized")
+        print("🚀 Classification Baseline Risk Model Initialized")
         print(f"📊 Target variables: {config['target_columns']}")
         print(f"🎯 Test size: {config['test_size']}")
         print(f"📁 Results will be saved to: {self.results_dir}")
@@ -236,14 +237,12 @@ class BaselineRiskModel:
         
         # Separate features and targets
         feature_cols = [col for col in processed_data.columns if not col.startswith('risk_year')]
-        target_data = {target: processed_data[target].values for target in target_cols if target in processed_data.columns}
-        
         X = processed_data[feature_cols]
         
         print(f"📊 Dataset structure (before target-specific filtering):")
         print(f"   • Total records: {len(processed_data):,}")
         print(f"   • Feature columns: {len(feature_cols)}")
-        print(f"   • Target variables: {len(target_data)}")
+        print(f"   • Target variables: {len([t for t in target_cols if t in processed_data.columns])}")
         
         # Show target availability statistics
         print(f"\n🎯 Target variable availability:")
@@ -255,29 +254,27 @@ class BaselineRiskModel:
         # Store feature columns for later use
         self.feature_columns = feature_cols
         
-        # Train/test split on full dataset
+        # Create a single shared split (indices) to keep alignment across all targets
         print(f"\n🔄 Creating train/test split ({int((1-self.config['test_size'])*100)}/{int(self.config['test_size']*100)})...")
-        
-        X_train, X_test = train_test_split(
-            X, 
+        indices = np.arange(len(processed_data))
+        train_idx, test_idx = train_test_split(
+            indices,
             test_size=self.config['test_size'],
             random_state=self.config['random_state'],
             shuffle=True
         )
         
-        # Split each target variable (keeping all values including NaN)
-        y_train_dict = {}
-        y_test_dict = {}
+        X_train = X.iloc[train_idx]
+        X_test = X.iloc[test_idx]
         
-        for target_name, target_values in target_data.items():
-            y_train_target, y_test_target = train_test_split(
-                target_values,
-                test_size=self.config['test_size'],
-                random_state=self.config['random_state'],
-                shuffle=True
-            )
-            y_train_dict[target_name] = y_train_target
-            y_test_dict[target_name] = y_test_target
+        # Slice each target by the same indices (keep NaNs; per-target filtering later)
+        y_train_dict: Dict[str, np.ndarray] = {}
+        y_test_dict: Dict[str, np.ndarray] = {}
+        for target in target_cols:
+            if target in processed_data.columns:
+                y_full = processed_data[target].values
+                y_train_dict[target] = y_full[train_idx]
+                y_test_dict[target] = y_full[test_idx]
         
         print(f"   • Training records: {len(X_train):,}")
         print(f"   • Test records: {len(X_test):,}")
@@ -293,28 +290,30 @@ class BaselineRiskModel:
     
     def train_models(self) -> Dict:
         """
-        Train separate XGBoost regression models for each target
+        Train separate XGBoost CLASSIFICATION models for each target
         
         Returns:
             Dictionary of trained models
         """
         print("\n" + "="*60)
-        print("3️⃣ MODEL TRAINING")
+        print("3️⃣ MODEL TRAINING (CLASSIFICATION)")
         print("="*60)
         
         models = {}
         xgb_params = self.config.get('xgb_params', {})
         
-        # Default parameters for baseline model
-        default_params = {
-            'objective': 'reg:squarederror',
+        # Default parameters for CLASSIFICATION model
+        standard_params = {
+            'objective': 'multi:softprob',
+            'num_class': 4,  # 4 classes: 0, 1, 2, 3
             'enable_missing': True,
             'random_state': 42,
-            'verbosity': 0
+            'verbosity': 0,
+            'n_jobs': -1,
         }
-        default_params.update(xgb_params)
+        standard_params.update(xgb_params)
         
-        print(f"🔧 XGBoost parameters: {default_params}")
+        print(f"🔧 XGBoost parameters: {standard_params}")
         print(f"📈 Training {len(self.y_train)} separate models with target-specific filtering...")
         
         for target_name, y_train_values in self.y_train.items():
@@ -331,20 +330,24 @@ class BaselineRiskModel:
                     print(f"      ❌ No valid training data for {target_name}")
                     continue
                 
+                # Ensure target values are integers for classification
+                y_train_filtered = y_train_filtered.astype(int)
+                
                 print(f"      📊 Training samples: {len(y_train_filtered):,} (filtered from {len(y_train_values):,})")
+                print(f"      🎯 Target classes: {sorted(np.unique(y_train_filtered))}")
                 
-                # Create and train XGBoost model
-                model = xgb.XGBRegressor(**default_params)
+                # Train CLASSIFICATION model
+                print(f"      🔄 Training classification model...")
+                model = xgb.XGBClassifier(**standard_params)
                 model.fit(X_train_filtered, y_train_filtered)
-                
                 models[target_name] = model
                 
                 # Quick training summary
-                train_pred = model.predict(X_train_filtered)
-                train_mae = mean_absolute_error(y_train_filtered, train_pred)
+                pred = model.predict(X_train_filtered)
+                accuracy = accuracy_score(y_train_filtered, pred)
+                f1 = f1_score(y_train_filtered, pred, average='macro')
                 
-                print(f"      ✅ Model trained successfully")
-                print(f"      📊 Training MAE: {train_mae:.4f}")
+                print(f"      ✅ Model - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
                 
             except Exception as e:
                 print(f"      ❌ Error training {target_name}: {e}")
@@ -357,13 +360,13 @@ class BaselineRiskModel:
     
     def predict_and_evaluate(self) -> Dict:
         """
-        Generate predictions and evaluate model performance
+        Generate predictions and evaluate CLASSIFICATION models
         
         Returns:
             Dictionary of predictions and metrics
         """
         print("\n" + "="*60)
-        print("4️⃣ PREDICTION & EVALUATION")
+        print("4️⃣ PREDICTION & EVALUATION (CLASSIFICATION)")
         print("="*60)
         
         predictions = {}
@@ -371,6 +374,7 @@ class BaselineRiskModel:
         
         print(f"🔮 Generating predictions for {len(self.models)} models...")
         
+        # Evaluate models
         for target_name, model in self.models.items():
             print(f"\n   📊 Evaluating {target_name}...")
             
@@ -386,38 +390,38 @@ class BaselineRiskModel:
                     print(f"      ❌ No valid test data for {target_name}")
                     continue
                 
+                # Ensure target values are integers for classification
+                y_test_filtered = y_test_filtered.astype(int)
+                
                 print(f"      📊 Test samples: {len(y_test_filtered):,} (filtered from {len(y_test_values):,})")
                 
-                # Generate predictions
-                y_pred_raw = model.predict(X_test_filtered)
-                
-                # Round to nearest integer and clip to valid range [0, 3]
-                y_pred_rounded = np.clip(np.round(y_pred_raw), 0, 3).astype(int)
-                
+                # Generate CLASSIFICATION predictions
+                y_pred_classes = model.predict(X_test_filtered)
                 # Store predictions
                 predictions[target_name] = {
-                    'raw': y_pred_raw,
-                    'rounded': y_pred_rounded,
+                    'classes': y_pred_classes,
                     'actual': y_test_filtered
                 }
                 
                 # Calculate metrics
-                mae = mean_absolute_error(y_test_filtered, y_pred_raw)
-                mae_rounded = mean_absolute_error(y_test_filtered, y_pred_rounded)
-                accuracy = accuracy_score(y_test_filtered, y_pred_rounded)
+                accuracy = accuracy_score(y_test_filtered, y_pred_classes)
+                f1_macro = f1_score(y_test_filtered, y_pred_classes, average='macro')
+                precision_macro = precision_score(y_test_filtered, y_pred_classes, average='macro')
+                recall_macro = recall_score(y_test_filtered, y_pred_classes, average='macro')
                 
                 # Store metrics
                 metrics[target_name] = {
-                    'mae_raw': mae,
-                    'mae_rounded': mae_rounded,
                     'accuracy': accuracy,
-                    'prediction_range': f"[{y_pred_raw.min():.2f}, {y_pred_raw.max():.2f}]"
+                    'f1_macro': f1_macro,
+                    'precision_macro': precision_macro,
+                    'recall_macro': recall_macro,
+                    'prediction_distribution': dict(pd.Series(y_pred_classes).value_counts().sort_index())
                 }
                 
-                print(f"      📈 MAE (raw): {mae:.4f}")
-                print(f"      📈 MAE (rounded): {mae_rounded:.4f}")
-                print(f"      🎯 Accuracy: {accuracy:.4f}")
-                print(f"      📊 Prediction range: {metrics[target_name]['prediction_range']}")
+                print(f"      📈 Accuracy: {accuracy:.4f}")
+                print(f"      🎯 F1-Score (Macro): {f1_macro:.4f}")
+                print(f"      📊 Precision (Macro): {precision_macro:.4f}")
+                print(f"      📊 Recall (Macro): {recall_macro:.4f}")
                 
             except Exception as e:
                 print(f"      ❌ Error evaluating {target_name}: {e}")
@@ -425,22 +429,23 @@ class BaselineRiskModel:
         
         self.predictions = predictions
         
-        # Print overall summary
+        # Print evaluation summary
         print(f"\n📋 EVALUATION SUMMARY:")
         if metrics:
-            avg_mae = np.mean([m['mae_rounded'] for m in metrics.values()])
             avg_accuracy = np.mean([m['accuracy'] for m in metrics.values()])
-            print(f"   • Average MAE (rounded): {avg_mae:.4f}")
-            print(f"   • Average Accuracy: {avg_accuracy:.4f}")
+            avg_f1 = np.mean([m['f1_macro'] for m in metrics.values()])
+            
+            print(f"   📊 Average Accuracy: {avg_accuracy:.4f}")
+            print(f"   📊 Average F1-Score: {avg_f1:.4f}")
         
         return predictions
     
     def create_visualizations(self):
         """
-        Create basic visualizations for model performance
+        Create basic visualizations for CLASSIFICATION model performance
         """
         print("\n" + "="*60)
-        print("5️⃣ VISUALIZATION & SUMMARY")
+        print("5️⃣ VISUALIZATION & SUMMARY (CLASSIFICATION)")
         print("="*60)
         
         if not self.predictions:
@@ -450,7 +455,7 @@ class BaselineRiskModel:
         # Create figure with subplots
         n_targets = len(self.predictions)
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('Baseline Model Performance - Step 1', fontsize=16, fontweight='bold')
+        fig.suptitle('Classification Baseline Model Performance - Step 1', fontsize=16, fontweight='bold')
         
         axes = axes.flatten()
         
@@ -461,7 +466,7 @@ class BaselineRiskModel:
                 
             ax = axes[i]
             y_true = pred_data['actual']
-            y_pred = pred_data['rounded']
+            y_pred = pred_data['classes']
             
             # Scatter plot
             ax.scatter(y_true, y_pred, alpha=0.6, s=20)
@@ -473,20 +478,20 @@ class BaselineRiskModel:
             # Formatting
             ax.set_xlabel('Actual Risk Level')
             ax.set_ylabel('Predicted Risk Level')
-            ax.set_title(f'{target_name} - Predictions vs Actual')
+            ax.set_title(f'{target_name} - Predictions vs Actual (Classification)')
             ax.grid(True, alpha=0.3)
             ax.set_xlim(-0.5, 3.5)
             ax.set_ylim(-0.5, 3.5)
             
             # Add metrics text
-            mae = mean_absolute_error(y_true, y_pred)
-            acc = accuracy_score(y_true, y_pred)
-            ax.text(0.05, 0.95, f'MAE: {mae:.3f}\nAcc: {acc:.3f}', 
+            accuracy = accuracy_score(y_true, y_pred)
+            f1_macro = f1_score(y_true, y_pred, average='macro')
+            ax.text(0.05, 0.95, f'Accuracy: {accuracy:.3f}\nF1: {f1_macro:.3f}', 
                    transform=ax.transAxes, verticalalignment='top',
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
         plt.tight_layout()
-        self._save_plot("01_prediction_vs_actual")
+        self._save_plot("01_classification_prediction_vs_actual")
         
         # 2. Feature Importance Analysis
         self._plot_feature_importance()
@@ -495,11 +500,11 @@ class BaselineRiskModel:
         self._print_performance_summary()
     
     def _plot_feature_importance(self):
-        """Plot feature importance for all models"""
+        """Plot feature importance for all CLASSIFICATION models"""
         if not self.models:
             return
             
-        print("\n📊 Feature Importance Analysis...")
+        print("\n📊 Feature Importance Analysis (Classification)...")
         
         # Collect feature importance from all models
         importance_data = {}
@@ -522,11 +527,11 @@ class BaselineRiskModel:
         
         # Plot with improved layout for Korean text
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 12))
-        fig.suptitle('Feature Importance Analysis', fontsize=16, fontweight='bold')
+        fig.suptitle('Feature Importance Analysis (Classification)', fontsize=16, fontweight='bold')
         
         # Average importance (horizontal bar chart)
         top_features['avg_importance'].plot(kind='barh', ax=ax1)
-        ax1.set_title('Top 20 Features - Average Importance')
+        ax1.set_title('Top 20 Features - Average Importance (Classification)')
         ax1.set_xlabel('Importance Score')
         
         # Importance by target (horizontal bar chart to avoid x-axis label overlap)
@@ -535,36 +540,38 @@ class BaselineRiskModel:
             # Transpose data for horizontal plotting
             plot_data = top_features[target_cols].T
             plot_data.plot(kind='barh', ax=ax2)
-            ax2.set_title('Feature Importance by Target Variable')
+            ax2.set_title('Feature Importance by Target Variable (Classification)')
             ax2.set_xlabel('Importance Score')
             ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         
         # Adjust layout to prevent label cutoff
         plt.subplots_adjust(bottom=0.15, left=0.1, right=0.85, top=0.9)
-        self._save_plot("02_feature_importance")
+        self._save_plot("02_classification_feature_importance")
         
         # Print top features
-        print(f"\n🏆 TOP 10 MOST IMPORTANT FEATURES:")
+        print(f"\n🏆 TOP 10 MOST IMPORTANT FEATURES (Classification):")
         for i, (feature, importance) in enumerate(top_features['avg_importance'].head(10).items(), 1):
             print(f"   {i:2d}. {feature}: {importance:.4f}")
     
     def _print_performance_summary(self):
-        """Print comprehensive performance summary and save to files"""
+        """Print comprehensive CLASSIFICATION performance summary and save to files"""
         if not self.predictions:
             return
             
-        print(f"\n📊 COMPREHENSIVE PERFORMANCE SUMMARY")
+        print(f"\n📊 COMPREHENSIVE CLASSIFICATION PERFORMANCE SUMMARY")
         print("-" * 60)
         
         # Create summary table
         summary_data = []
         for target_name, pred_data in self.predictions.items():
             y_true = pred_data['actual']
-            y_pred = pred_data['rounded']
+            y_pred = pred_data['classes']
             
             # Calculate detailed metrics
-            mae = mean_absolute_error(y_true, y_pred)
             accuracy = accuracy_score(y_true, y_pred)
+            f1_macro = f1_score(y_true, y_pred, average='macro')
+            precision_macro = precision_score(y_true, y_pred, average='macro')
+            recall_macro = recall_score(y_true, y_pred, average='macro')
             
             # Class distribution
             true_dist = pd.Series(y_true).value_counts().sort_index()
@@ -572,8 +579,10 @@ class BaselineRiskModel:
             
             summary_data.append({
                 'Target': target_name,
-                'MAE': f"{mae:.4f}",
                 'Accuracy': f"{accuracy:.4f}",
+                'F1_Macro': f"{f1_macro:.4f}",
+                'Precision_Macro': f"{precision_macro:.4f}",
+                'Recall_Macro': f"{recall_macro:.4f}",
                 'True_Dist': dict(true_dist),
                 'Pred_Dist': dict(pred_dist)
             })
@@ -581,8 +590,10 @@ class BaselineRiskModel:
         # Print summary table
         for data in summary_data:
             print(f"\n🎯 {data['Target']}:")
-            print(f"   • MAE: {data['MAE']}")
             print(f"   • Accuracy: {data['Accuracy']}")
+            print(f"   • F1-Score (Macro): {data['F1_Macro']}")
+            print(f"   • Precision (Macro): {data['Precision_Macro']}")
+            print(f"   • Recall (Macro): {data['Recall_Macro']}")
             print(f"   • Actual distribution: {data['True_Dist']}")
             print(f"   • Predicted distribution: {data['Pred_Dist']}")
         
@@ -591,20 +602,22 @@ class BaselineRiskModel:
     
     def _save_performance_metrics(self, summary_data: List[Dict]):
         """
-        Save performance metrics to CSV and JSON files
+        Save CLASSIFICATION performance metrics to CSV and JSON files
         
         Args:
             summary_data: List of performance data dictionaries
         """
-        print("\n💾 Saving performance metrics to files...")
+        print("\n💾 Saving CLASSIFICATION performance metrics to files...")
         
         # Prepare data for CSV (flatten dictionaries)
         csv_data = []
         for data in summary_data:
             csv_row = {
                 'Target': data['Target'],
-                'MAE': float(data['MAE']),
                 'Accuracy': float(data['Accuracy']),
+                'F1_Macro': float(data['F1_Macro']),
+                'Precision_Macro': float(data['Precision_Macro']),
+                'Recall_Macro': float(data['Recall_Macro']),
             }
             # Add distribution data
             for level in [0, 1, 2, 3]:
@@ -616,32 +629,33 @@ class BaselineRiskModel:
         csv_df = pd.DataFrame(csv_data)
         csv_path = os.path.join(self.results_dir, 'metrics', 'step1_performance_summary.csv')
         csv_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-        print(f"  📊 Performance summary saved: step1_performance_summary.csv")
+        print(f"  📊 Classification performance summary saved: step1_performance_summary.csv")
         
         # Save detailed JSON
         json_path = os.path.join(self.results_dir, 'metrics', 'step1_detailed_results.json')
         with open(json_path, 'w', encoding='utf-8') as f:
             import json
             json.dump(summary_data, f, indent=2, default=str, ensure_ascii=False)
-        print(f"  📄 Detailed results saved: step1_detailed_results.json")
+        print(f"  📄 Classification detailed results saved: step1_detailed_results.json")
         
         # Save model files
         self._save_models()
     
     def _save_models(self):
-        """Save trained models to files"""
-        print("\n💾 Saving trained models...")
+        """Save trained CLASSIFICATION models to files"""
+        print("\n💾 Saving trained CLASSIFICATION models...")
         
+        # Save models
         for target_name, model in self.models.items():
-            model_path = os.path.join(self.results_dir, 'models', f'{target_name}_model.json')
+            model_path = os.path.join(self.results_dir, 'models', f'{target_name}_classification_model.json')
             model.save_model(model_path)
-            print(f"  🤖 Model saved: {target_name}_model.json")
+            print(f"  🤖 Classification model saved: {target_name}_classification_model.json")
     
-    def run_step1_pipeline(self):
+    def run_step1_classification_pipeline(self):
         """
-        Execute complete Step 1 pipeline
+        Execute complete Step 1 CLASSIFICATION pipeline
         """
-        print("🏗️ EXECUTING STEP 1: SIMPLE BASELINE MODEL")
+        print("🏗️ EXECUTING STEP 1: CLASSIFICATION BASELINE MODEL")
         print("=" * 70)
         
         try:
@@ -651,7 +665,7 @@ class BaselineRiskModel:
             # Step 2: Preprocess data
             self.preprocess_data()
             
-            # Step 3: Train models
+            # Step 3: Train CLASSIFICATION models
             self.train_models()
             
             # Step 4: Predict and evaluate
@@ -660,36 +674,36 @@ class BaselineRiskModel:
             # Step 5: Create visualizations
             self.create_visualizations()
             
-            print("\n🎉 STEP 1 COMPLETED SUCCESSFULLY!")
-            print("✅ Baseline performance established")
-            print("✅ Working pipeline ready for Step 2")
+            print("\n🎉 STEP 1 CLASSIFICATION COMPLETED SUCCESSFULLY!")
+            print("✅ Classification baseline performance established")
+            print("✅ Working classification pipeline ready")
             
             # Print results summary
             self._print_results_summary()
             
         except Exception as e:
-            print(f"\n❌ STEP 1 FAILED: {e}")
+            print(f"\n❌ STEP 1 CLASSIFICATION FAILED: {e}")
             raise
     
     def _print_results_summary(self):
         """Print summary of all generated files and outputs"""
-        print(f"\n📁 RESULTS SUMMARY:")
+        print(f"\n📁 CLASSIFICATION RESULTS SUMMARY:")
         print(f"   All outputs saved to: {self.results_dir}")
         print(f"   📊 Visualizations:")
-        print(f"      • 01_prediction_vs_actual.png")
-        print(f"      • 02_feature_importance.png")
+        print(f"      • 01_classification_prediction_vs_actual.png")
+        print(f"      • 02_classification_feature_importance.png")
         print(f"   📈 Metrics:")
         print(f"      • step1_performance_summary.csv")
         print(f"      • step1_detailed_results.json")
         print(f"   🤖 Models:")
         for target in self.config['target_columns']:
-            print(f"      • {target}_model.json")
-        print(f"\n💡 Use these files for offline analysis and reporting!")
+            print(f"      • {target}_classification_model.json")
+        print(f"\n💡 Use these files for comparison with other steps!")
 
 
-def get_step1_config():
+def get_step1_classification_config():
     """
-    Configuration for Step 1 baseline model
+    Configuration for Step 1 CLASSIFICATION baseline model
     """
     return {
         'data_path': 'dataset/credit_risk_dataset.csv',
@@ -711,6 +725,8 @@ def get_step1_config():
         'test_size': 0.2,
         'random_state': 42,
         'xgb_params': {
+            'objective': 'multi:softprob',
+            'num_class': 4,
             'enable_missing': True,
             'random_state': 42,
             'verbosity': 0
@@ -721,15 +737,15 @@ def get_step1_config():
 # Main execution
 if __name__ == "__main__":
     
-    print("🚀 Starting XGBoost Risk Prediction Model - Step 1")
+    print("🚀 Starting XGBoost Risk Prediction Model - Step 1 (CLASSIFICATION)")
     print("="*60)
     
     # Get configuration
-    config = get_step1_config()
+    config = get_step1_classification_config()
     
-    # Create and run baseline model
-    baseline_model = BaselineRiskModel(config)
-    baseline_model.run_step1_pipeline()
+    # Create and run classification baseline model
+    classification_baseline_model = ClassificationBaselineRiskModel(config)
+    classification_baseline_model.run_step1_classification_pipeline()
     
-    print("\n🏁 Step 1 execution completed!")
-    print("Ready to proceed to Step 2: Basic Evaluation Framework")
+    print("\n🏁 Step 1 Classification execution completed!")
+    print("Ready to proceed to Step 2!")
