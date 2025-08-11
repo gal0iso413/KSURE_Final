@@ -8,9 +8,10 @@
 **Step 1: Simple Baseline Model**
 - Load data from 1_Dataset.py output
 - Basic data exploration (shape, missing values, target distribution)
-- Create simplest possible XGBoost model with default parameters
+- Train and compare three models on the same split: XGBoost, MLP, RandomForest
 - Use simple train/test split (80/20) without considering dates
-- *Goal: Establish working pipeline and baseline performance*
+- Save per-model metrics, plots, and model artifacts
+- *Goal: Establish working pipeline and baseline performance across diverse model families*
 
 **Step 2: Basic Evaluation Framework**
 - Implement proper multi-class evaluation metrics
@@ -65,13 +66,13 @@
 ### **Phase 5: Model Architecture Experiments**
 
 **Step 7: Model Architecture Experiments**
-- **Phase 1 - Unified vs. Individual Models**: Test single model for all years vs. separate models per year
-- **Phase 2 - Classification vs. Regression**: Compare classification vs. regression approaches
-- **Phase 3 - Ordinal vs. No Ordinal**: Compare cost-sensitive ordinal classification vs. standard classification
-- **Use Optimized Features**: From Step 4 results (27 features)
+- **Phase 1 - Unified vs. Individual Models**: Compare unified configuration (one shared configuration across all targets) vs. individual configurations (per-target configuration). Both use Step 6 handling so only architecture/config changes are compared.
+- **Phase 2 - Two-Stage Cascade Model**: High-risk Gate (2/3 vs 0/1) + Specialist (2 vs 3) with calibrated thresholds
+- **Use Optimized Features**: From Step 4 results
 - **Use Rolling Window CV**: From Step 5 for temporal robustness
-- **Use Enhanced Sample Weights**: From Step 6 results (cost-based ordinal weights)
-- **Evaluation Focus**: High-risk recall, F1-macro, temporal stability
+- **Use Best Imbalance Handling**: Apply Step 6 techniques (class-balanced weights, calibration, thresholds) consistently
+- **Evaluation Metrics**: High-risk Recall (primary), F1-macro, Balanced Accuracy, Cohen's Kappa, High-risk PR-AUC, ECE, Stability (mean F1 − std F1)
+- **Sparse Targets Handling**: Adapt window size/folds for very sparse targets to ensure valid folds
 - **Efficient Training**: Reuse results from previous phases to avoid duplicate training
 - *Goal: Find optimal model architecture with comprehensive optimal setup*
 
@@ -81,10 +82,10 @@
 - Define search space based on selected architecture (Step 7)
 - Use selected temporal validation strategy (Step 5)
 - Optimize for high-risk recall
-- **Use Best Architecture**: From Step 7 results
+- **Use Two stage cascade**: From Step 7 results
 - **Use Optimized Features**: From Step 4 results
-- **Use Selected Validation**: From Step 5 results
-- **Use Best Imbalance Strategy**: From Step 6 results
+- **Use Rolling Window CV**: From Step 5 results
+- **Use Ordinal cumulative**: From Step 6 results
 - *Goal: Find optimal model configuration*
 
 ### **Phase 7: Analysis & Interpretation**

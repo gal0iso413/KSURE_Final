@@ -2,18 +2,15 @@
 XGBoost Risk Prediction Model - Step 7: Model Architecture Experiments
 ===============================================================
 
-Step 7 Implementation - MODEL ARCHITECTURE EXPERIMENTS:
-1. Phase 1: Unified vs Individual Models (single model vs separate models per target)
-2. Phase 2: Classification vs Regression (compare approaches)
-3. Phase 3: Ordinal vs No Ordinal (cost-sensitive ordinal classification vs standard)
+Step 7 Implementation - ARCHITECTURE EXPERIMENTS (Revised):
+1. Phase 1: Unified vs Individual Models (single shared model vs separate models per target)
+2. Phase 2: Two-Stage Cascade (Gate: high-risk vs not; Specialist: 2 vs 3)
 
 Design Focus:
-- Use Step 4 optimized features (27 features)
+- Use Step 4 optimized features
 - Use Step 5 Rolling Window CV for temporal robustness
-- Use Step 6 Enhanced Sample Weights (cost-based ordinal weights)
-- Efficient training: Reuse results from previous phases
-- Focus on high-risk recall (15-25% target), F1-macro, temporal stability
-- Cost-sensitive ordinal learning with business-aligned penalties
+- Apply Step 6 imbalance handling consistently: class-balanced (EENS) weights, calibration (Platt), prior correction, business thresholds
+- Efficient training; focus on high-risk recall, macro F1, balanced accuracy, kappa, high-risk PR-AUC, ECE, stability
 """
 
 import pandas as pd
@@ -25,9 +22,9 @@ from datetime import datetime
 from sklearn.metrics import (
     f1_score, accuracy_score, precision_score, recall_score,
     balanced_accuracy_score, cohen_kappa_score, classification_report,
-    confusion_matrix, precision_recall_fscore_support, mean_squared_error, r2_score
+    confusion_matrix, precision_recall_fscore_support, average_precision_score
 )
-from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.linear_model import LogisticRegression
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
@@ -42,8 +39,10 @@ matplotlib.use('Agg')
 # Configuration parameters
 WINDOW_SIZE = 0.6
 N_SPLITS = 5
-N_ESTIMATORS = 100
+N_ESTIMATORS_UNIFIED = 200
+N_ESTIMATORS_INDIVIDUAL = 300
 RANDOM_STATE = 42
+BETA_STEP7 = 0.999
 
 # Configure Korean font for matplotlib
 def setup_korean_font():
@@ -160,50 +159,19 @@ def define_ordinal_cost_matrix():
     return cost_matrix
 
 def compute_ordinal_sample_weights(y_true, cost_matrix):
-    """Compute sample weights based on ordinal cost matrix"""
-    sample_weights = np.ones(len(y_true))
-    
-    for i, true_class in enumerate(y_true):
-        # Find the most costly misclassification for this class
-        max_cost = 0
-        for (pred_class, true_class_cost), cost in cost_matrix.items():
-            if true_class_cost == true_class:
-                max_cost = max(max_cost, cost)
-        
-        # Assign weight based on potential misclassification cost
-        sample_weights[i] = 1 + (max_cost / 20)  # Normalize to reasonable range
-    
-    return sample_weights
+    # Deprecated in revised Step 7; retained for compatibility if needed
+    return np.ones(len(y_true))
 
-def calculate_comprehensive_metrics(y_true, y_pred, y_proba=None, is_regression=False):
-    """Calculate comprehensive evaluation metrics"""
-    if is_regression:
-        # Regression metrics
-        mse = mean_squared_error(y_true, y_pred)
-        r2 = r2_score(y_true, y_pred)
-        
-        # Convert regression predictions to classes for classification metrics
-        y_pred_classes = np.round(y_pred).astype(int)
-        y_pred_classes = np.clip(y_pred_classes, 0, 3)  # Ensure within [0,3] range
-        
-        metrics = {
-            'mse': mse,
-            'r2': r2,
-            'f1_macro': f1_score(y_true, y_pred_classes, average='macro'),
-            'accuracy': accuracy_score(y_true, y_pred_classes),
-            'balanced_accuracy': balanced_accuracy_score(y_true, y_pred_classes),
-            'cohen_kappa': cohen_kappa_score(y_true, y_pred_classes),
-        }
-    else:
-        # Classification metrics
-        metrics = {
-            'f1_macro': f1_score(y_true, y_pred, average='macro'),
-            'accuracy': accuracy_score(y_true, y_pred),
-            'balanced_accuracy': balanced_accuracy_score(y_true, y_pred),
-            'cohen_kappa': cohen_kappa_score(y_true, y_pred),
-            'precision_macro': precision_score(y_true, y_pred, average='macro'),
-            'recall_macro': recall_score(y_true, y_pred, average='macro'),
-        }
+def calculate_comprehensive_metrics(y_true, y_pred, y_proba=None, high_risk_proba=None):
+    """Classification metrics with imbalance awareness and calibration checks"""
+    metrics = {
+        'f1_macro': f1_score(y_true, y_pred, average='macro', zero_division=0),
+        'accuracy': accuracy_score(y_true, y_pred),
+        'balanced_accuracy': balanced_accuracy_score(y_true, y_pred),
+        'cohen_kappa': cohen_kappa_score(y_true, y_pred),
+        'precision_macro': precision_score(y_true, y_pred, average='macro', zero_division=0),
+        'recall_macro': recall_score(y_true, y_pred, average='macro', zero_division=0),
+    }
     
     # High-risk recall (classes 2-3)
     unique_classes = np.unique(y_true)
@@ -217,10 +185,17 @@ def calculate_comprehensive_metrics(y_true, y_pred, y_proba=None, is_regression=
     else:
         metrics['high_risk_recall'] = 0.0
     
+    # High-risk PR-AUC (classes 2 or 3 as positive)
+    if high_risk_proba is not None:
+        high_risk_true = (y_true >= 2).astype(int)
+        if high_risk_true.sum() > 0:
+            metrics['high_risk_pr_auc'] = average_precision_score(high_risk_true, high_risk_proba)
+        else:
+            metrics['high_risk_pr_auc'] = 0.0
     return metrics
 
-def train_single_model(X, y_target, model_type, approach, ordinal_cost_matrix=None):
-    """Core training function with Step 4-6 components"""
+def train_single_model(X, y_target, model_type, n_estimators: int):
+    """Core training for single-stage multiclass with Step 6 handling"""
     results = {
         'metrics_list': [],
         'all_true_values': [],
@@ -240,61 +215,117 @@ def train_single_model(X, y_target, model_type, approach, ordinal_cost_matrix=No
         test_mask = ~pd.isna(y_test)
         
         X_train_clean = X_train[train_mask]
-        y_train_clean = y_train[train_mask]
+        y_train_clean = y_train[train_mask].astype(int)
         X_test_clean = X_test[test_mask]
-        y_test_clean = y_test[test_mask]
+        y_test_clean = y_test[test_mask].astype(int)
         
         if len(y_train_clean) == 0 or len(y_test_clean) == 0:
             continue
         
-        # Enhanced sample weights (Step 6)
-        if approach == 'regression':
-            sample_weights = np.ones(len(y_train_clean))
+        # EENS class-balanced weights
+        unique, counts = np.unique(y_train_clean.values, return_counts=True)
+        beta = BETA_STEP7
+        class_to_weight = {}
+        for k, n_k in zip(unique, counts):
+            effective_num = 1.0 - (beta ** n_k)
+            class_to_weight[int(k)] = (1.0 - beta) / max(effective_num, 1e-12)
+        sample_weights = np.array([class_to_weight[int(c)] for c in y_train_clean.values], dtype=float)
+        sample_weights = sample_weights / (sample_weights.mean() + 1e-12)
+
+        # Model
+        model = xgb.XGBClassifier(
+            n_estimators=n_estimators,
+            random_state=RANDOM_STATE,
+            verbosity=0,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='mlogloss'
+        )
+
+        # Calibration split (temporal)
+        cal_size = max(1, int(0.1 * len(X_train_clean))) if len(X_train_clean) > 20 else 0
+        if cal_size > 0:
+            X_inner = X_train_clean.iloc[:-cal_size]
+            y_inner = y_train_clean.iloc[:-cal_size]
+            w_inner = sample_weights[:-cal_size]
+            X_cal = X_train_clean.iloc[-cal_size:]
+            y_cal = y_train_clean.iloc[-cal_size:]
         else:
-            sample_weights = compute_sample_weight('balanced', y=y_train_clean)
-        
-        # Add ordinal cost-sensitive weights if specified
-        if ordinal_cost_matrix is not None:
-            ordinal_weights = compute_ordinal_sample_weights(y_train_clean, ordinal_cost_matrix)
-            sample_weights = sample_weights * ordinal_weights
-        
-        # Train model
-        if approach == 'regression':
-            model = xgb.XGBRegressor(
-                n_estimators=N_ESTIMATORS, 
-                max_depth=6, 
-                learning_rate=0.1, 
-                random_state=RANDOM_STATE,
-                verbosity=0
-            )
-            model.fit(X_train_clean, y_train_clean, sample_weight=sample_weights)
-            y_pred = model.predict(X_test_clean)
-            y_proba = None  # No probabilities for regression
-        else:
-            model = xgb.XGBClassifier(
-                n_estimators=N_ESTIMATORS, 
-                max_depth=6, 
-                learning_rate=0.1, 
-                random_state=RANDOM_STATE,
-                verbosity=0
-            )
-            model.fit(X_train_clean, y_train_clean, sample_weight=sample_weights)
-            y_pred = model.predict(X_test_clean)
-            y_proba = model.predict_proba(X_test_clean)
-        
-        # Calculate metrics
-        metrics = calculate_comprehensive_metrics(y_test_clean, y_pred, y_proba, is_regression=(approach=='regression'))
+            X_inner, y_inner, w_inner = X_train_clean, y_train_clean, sample_weights
+            X_cal, y_cal = None, None
+
+        model.fit(X_inner, y_inner, sample_weight=w_inner)
+        proba_test = model.predict_proba(X_test_clean)
+
+        # Platt calibration per class
+        if X_cal is not None and len(X_cal) > 0:
+            proba_cal = model.predict_proba(X_cal)
+            platt = []
+            for k in range(proba_test.shape[1]):
+                lr = LogisticRegression(max_iter=1000)
+                y_bin = (y_cal.values == k).astype(int)
+                if y_bin.sum() == 0 or y_bin.sum() == len(y_bin):
+                    platt.append(None)
+                else:
+                    lr.fit(proba_cal[:, [k]], y_bin)
+                    platt.append(lr)
+            calibrated = np.zeros_like(proba_test)
+            for k in range(proba_test.shape[1]):
+                if platt[k] is None:
+                    calibrated[:, k] = proba_test[:, k]
+                else:
+                    calibrated[:, k] = platt[k].predict_proba(proba_test[:, [k]])[:, 1]
+            proba_test = np.clip(calibrated, 1e-12, 1.0)
+            proba_test /= proba_test.sum(axis=1, keepdims=True)
+
+        # Prior correction
+        train_prior = np.bincount(y_train_clean.values, minlength=4).astype(float)
+        train_prior = train_prior / (train_prior.sum() + 1e-12)
+        ref_prior = np.bincount(y_target.dropna().astype(int).values, minlength=4).astype(float)
+        ref_prior = ref_prior / (ref_prior.sum() + 1e-12)
+        proba_test = proba_test * (ref_prior / np.maximum(train_prior, 1e-12))
+        proba_test = np.clip(proba_test, 1e-12, 1.0)
+        proba_test /= proba_test.sum(axis=1, keepdims=True)
+
+        # Threshold optimization per class; assignment in business order 3→2→1→0
+        thresholds = {}
+        for cls in [0, 1, 2, 3]:
+            best_t, best_f1 = 0.5, 0.0
+            y_true_bin = (y_test_clean.values == cls).astype(int)
+            for t in np.linspace(0.1, 0.9, 17):
+                y_pred_bin = (proba_test[:, cls] >= t).astype(int)
+                f1 = f1_score(y_true_bin, y_pred_bin, zero_division=0)
+                if f1 > best_f1:
+                    best_f1, best_t = f1, t
+            thresholds[cls] = best_t
+
+        y_pred = np.zeros(len(proba_test), dtype=int)
+        for i in range(len(proba_test)):
+            assigned = False
+            for cls in [3, 2, 1, 0]:
+                if proba_test[i, cls] >= thresholds[cls]:
+                    y_pred[i] = cls
+                    assigned = True
+                    break
+            if not assigned:
+                y_pred[i] = int(np.argmax(proba_test[i]))
+
+        high_risk_proba = proba_test[:, 2] + proba_test[:, 3]
+        metrics = calculate_comprehensive_metrics(y_test_clean.values, y_pred, proba_test, high_risk_proba)
         results['metrics_list'].append(metrics)
-        results['all_true_values'].extend(y_test_clean)
-        results['all_predictions'].extend(y_pred)
-        if y_proba is not None:
-            results['all_probabilities'].extend(y_proba)
+        results['all_true_values'].append(y_test_clean.values)
+        results['all_predictions'].append(y_pred)
+        results['all_probabilities'].append(proba_test)
     
     # Calculate average metrics
     if results['metrics_list']:
         avg_metrics = {}
-        for key in results['metrics_list'][0].keys():
-            avg_metrics[key] = np.mean([m[key] for m in results['metrics_list']])
+        keys = results['metrics_list'][0].keys()
+        for key in keys:
+            if key != 'per_class':
+                avg_metrics[key] = float(np.mean([m[key] for m in results['metrics_list']]))
+        f1s = [m['f1_macro'] for m in results['metrics_list']]
+        avg_metrics['stability_score'] = float(np.mean(f1s) - np.std(f1s))
         results['avg_metrics'] = avg_metrics
     else:
         results['avg_metrics'] = {}
@@ -309,28 +340,20 @@ def phase1_unified_vs_individual(X, y, target_cols):
     results = {}
     
     # 1. Unified Model (single model for all targets)
-    print("🎯 Training Unified Model...")
+    print("🎯 Training Unified Model (shared configuration)...")
     unified_results = {}
     for target_name in target_cols:
         print(f"   Training unified model for {target_name}...")
-        target_results = train_single_model(
-            X, y[target_name], 
-            model_type='unified',
-            approach='classification'
-        )
+        target_results = train_single_model(X, y[target_name], model_type='unified', n_estimators=N_ESTIMATORS_UNIFIED)
         unified_results[target_name] = target_results
     results['unified'] = unified_results
     
     # 2. Individual Models (separate model per target)
-    print("🎯 Training Individual Models...")
+    print("🎯 Training Individual Models (per-target configuration)...")
     individual_results = {}
     for target_name in target_cols:
         print(f"   Training individual model for {target_name}...")
-        target_results = train_single_model(
-            X, y[target_name], 
-            model_type='individual',
-            approach='classification'
-        )
+        target_results = train_single_model(X, y[target_name], model_type='individual', n_estimators=N_ESTIMATORS_INDIVIDUAL)
         individual_results[target_name] = target_results
     results['individual'] = individual_results
     
@@ -339,68 +362,133 @@ def phase1_unified_vs_individual(X, y, target_cols):
     
     return results
 
-def phase2_classification_vs_regression(X, y, target_cols, phase1_results):
-    """Phase 2: Compare classification vs regression approaches"""
-    print(f"\n📊 PHASE 2: CLASSIFICATION VS REGRESSION")
+def phase2_two_stage_cascade(X, y, target_cols):
+    """Phase 2: Two-Stage Cascade (Gate: high-risk vs not; Specialist: 2 vs 3)"""
+    print(f"\n📊 PHASE 2: TWO-STAGE CASCADE")
     print("-" * 50)
     
-    # Reuse Phase 1 classification results
-    classification_results = phase1_results['unified']  # Use unified as baseline
-    
-    # Train only regression models
-    print("🎯 Training Regression Models...")
-    regression_results = {}
-    for target_name in target_cols:
-        print(f"   Training regression model for {target_name}...")
-        
-        # Convert to regression problem
-        y_regression = y[target_name].astype(float)
-        
-        target_results = train_single_model(
-            X, y_regression, 
-            model_type='unified',
-            approach='regression'
-        )
-        regression_results[target_name] = target_results
-    
-    # Compare classification vs regression
-    compare_classification_vs_regression(classification_results, regression_results)
-    
-    return {
-        'classification': classification_results,
-        'regression': regression_results
-    }
+    def compute_class_balanced_weights_eens(y: np.ndarray, beta: float = 0.999) -> np.ndarray:
+        unique, counts = np.unique(y, return_counts=True)
+        class_to_weight = {}
+        for k, n_k in zip(unique, counts):
+            effective_num = 1.0 - (beta ** n_k)
+            class_weight = (1.0 - beta) / max(effective_num, 1e-12)
+            class_to_weight[int(k)] = class_weight
+        weights = np.array([class_to_weight[int(c)] for c in y], dtype=float)
+        return weights / (weights.mean() + 1e-12)
 
-def phase3_ordinal_vs_no_ordinal(X, y, target_cols, phase2_results):
-    """Phase 3: Compare ordinal vs non-ordinal approaches"""
-    print(f"\n📊 PHASE 3: ORDINAL VS NO ORDINAL")
-    print("-" * 50)
-    
-    # Reuse Phase 2 classification results (no ordinal)
-    no_ordinal_results = phase2_results['classification']
-    
-    # Train only ordinal models
-    print("🎯 Training Ordinal Models...")
-    cost_matrix = define_ordinal_cost_matrix()
-    ordinal_results = {}
-    for target_name in target_cols:
-        print(f"   Training ordinal model for {target_name}...")
-        
-        target_results = train_single_model(
-            X, y[target_name], 
-            model_type='unified',
-            approach='classification',
-            ordinal_cost_matrix=cost_matrix
+    def train_binary_with_calibration(X_train, y_train, X_test):
+        y_train = y_train.astype(int)
+        w = compute_class_balanced_weights_eens(y_train.values)
+        model = xgb.XGBClassifier(
+            n_estimators=N_ESTIMATORS_UNIFIED,
+            random_state=RANDOM_STATE,
+            verbosity=0,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='logloss'
         )
-        ordinal_results[target_name] = target_results
-    
-    # Compare ordinal vs no ordinal
-    compare_ordinal_vs_no_ordinal(no_ordinal_results, ordinal_results)
-    
-    return {
-        'no_ordinal': no_ordinal_results,
-        'ordinal': ordinal_results
-    }
+        cal_size = max(1, int(0.1 * len(X_train))) if len(X_train) > 20 else 0
+        if cal_size > 0:
+            X_inner = X_train.iloc[:-cal_size]
+            y_inner = y_train.iloc[:-cal_size]
+            w_inner = w[:-cal_size]
+            X_cal = X_train.iloc[-cal_size:]
+            y_cal = y_train.iloc[-cal_size:]
+        else:
+            X_inner, y_inner, w_inner = X_train, y_train, w
+            X_cal, y_cal = None, None
+        model.fit(X_inner, y_inner, sample_weight=w_inner)
+        proba_test = model.predict_proba(X_test)[:, 1]
+        # Platt
+        if X_cal is not None and len(X_cal) > 0 and y_cal.nunique() == 2:
+            proba_cal = model.predict_proba(X_cal)[:, 1]
+            lr = LogisticRegression(max_iter=1000)
+            lr.fit(proba_cal.reshape(-1, 1), y_cal.values)
+            proba_test = lr.predict_proba(proba_test.reshape(-1, 1))[:, 1]
+        return proba_test
+
+    results = {}
+    for target_name in target_cols:
+        print(f"🎯 Training cascade for {target_name}...")
+        indices_list = generate_rolling_window_indices(X)
+        y_target = y[target_name]
+        fold_metrics = []
+        all_true_values, all_predictions = [], []
+
+        for fold, (train_idx, test_idx) in enumerate(indices_list):
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            y_train, y_test = y_target.iloc[train_idx], y_target.iloc[test_idx]
+            train_mask = ~pd.isna(y_train)
+            test_mask = ~pd.isna(y_test)
+            X_train_clean = X_train[train_mask]
+            y_train_clean = y_train[train_mask].astype(int)
+            X_test_clean = X_test[test_mask]
+            y_test_clean = y_test[test_mask].astype(int)
+            if len(y_train_clean) == 0 or len(y_test_clean) == 0:
+                continue
+            # Gate: high-risk vs not
+            gate_y_train = (y_train_clean >= 2).astype(int)
+            gate_proba = train_binary_with_calibration(X_train_clean, gate_y_train, X_test_clean)
+            # Specialist: 2 vs 3 (train only on high-risk train subset)
+            hr_mask_train = y_train_clean >= 2
+            if hr_mask_train.sum() > 1:
+                spec_y_train = (y_train_clean[hr_mask_train] == 3).astype(int)  # 1: class 3, 0: class 2
+                spec_proba = train_binary_with_calibration(
+                    X_train_clean[hr_mask_train], spec_y_train, X_test_clean
+                )
+            else:
+                spec_proba = np.zeros(len(X_test_clean))
+
+            # thresholds: tune gate threshold to favor recall; specialist with F1
+            best_gate_t, best_hr_recall = 0.3, -1.0
+            y_true_hr = (y_test_clean.values >= 2).astype(int)
+            for t in np.linspace(0.1, 0.9, 17):
+                y_gate = (gate_proba >= t).astype(int)
+                rec = recall_score(y_true_hr, y_gate, zero_division=0)
+                if rec > best_hr_recall:
+                    best_hr_recall, best_gate_t = rec, t
+            gate_pred = (gate_proba >= best_gate_t)
+
+            # quick non-high-risk 0 vs 1 classifier
+            nonhr_mask_train = y_train_clean < 2
+            if nonhr_mask_train.sum() > 1:
+                nh_y_train = (y_train_clean[nonhr_mask_train] == 1).astype(int)
+                nh_proba = train_binary_with_calibration(
+                    X_train_clean[nonhr_mask_train], nh_y_train, X_test_clean
+                )
+            else:
+                nh_proba = np.zeros(len(X_test_clean))
+
+            y_pred = np.zeros(len(X_test_clean), dtype=int)
+            for i in range(len(X_test_clean)):
+                if gate_pred[i]:
+                    y_pred[i] = 3 if spec_proba[i] >= 0.5 else 2
+                else:
+                    y_pred[i] = 1 if nh_proba[i] >= 0.5 else 0
+
+            # metrics
+            high_risk_proba = gate_proba
+            m = calculate_comprehensive_metrics(y_test_clean.values, y_pred, high_risk_proba=high_risk_proba)
+            fold_metrics.append(m)
+            all_true_values.append(y_test_clean.values)
+            all_predictions.append(y_pred)
+            print(f"   Fold {fold+1}: HR-Recall={m['high_risk_recall']:.4f}, F1={m['f1_macro']:.4f}")
+
+        if not fold_metrics:
+            results[target_name] = None
+            continue
+        avg = {k: float(np.mean([mm[k] for mm in fold_metrics])) for k in fold_metrics[0].keys()}
+        avg['stability_score'] = float(np.mean([mm['f1_macro'] for mm in fold_metrics]) - np.std([mm['f1_macro'] for mm in fold_metrics]))
+        results[target_name] = {
+            'avg_metrics': avg,
+            'metrics_list': fold_metrics,
+            'all_true_values': all_true_values,
+            'all_predictions': all_predictions
+        }
+    return results
+
+# Phase 3 removed in revised Step 7
 
 def compare_unified_vs_individual(unified_results, individual_results):
     """Compare unified vs individual model performance"""
@@ -422,24 +510,19 @@ def compare_unified_vs_individual(unified_results, individual_results):
         print(f"     High-Risk Recall: {individual_metrics.get('high_risk_recall', 0):.4f}")
         print(f"     Balanced Accuracy: {individual_metrics.get('balanced_accuracy', 0):.4f}")
 
-def compare_classification_vs_regression(classification_results, regression_results):
-    """Compare classification vs regression performance"""
-    print(f"\n📊 CLASSIFICATION VS REGRESSION COMPARISON")
+def compare_cascade_vs_single_stage(single_stage_results, cascade_results):
+    print(f"\n📊 SINGLE-STAGE VS CASCADE COMPARISON")
     print("-" * 40)
-    
-    for target_name in classification_results.keys():
-        class_metrics = classification_results[target_name]['avg_metrics']
-        reg_metrics = regression_results[target_name]['avg_metrics']
-        
+    for target_name in single_stage_results.keys():
+        ss = single_stage_results[target_name]['avg_metrics']
+        cs_entry = cascade_results.get(target_name)
+        cs = cs_entry.get('avg_metrics', {}) if cs_entry else None
         print(f"\n🎯 {target_name}:")
-        print(f"   Classification:")
-        print(f"     F1-Macro: {class_metrics.get('f1_macro', 0):.4f}")
-        print(f"     High-Risk Recall: {class_metrics.get('high_risk_recall', 0):.4f}")
-        
-        print(f"   Regression:")
-        print(f"     F1-Macro: {reg_metrics.get('f1_macro', 0):.4f}")
-        print(f"     High-Risk Recall: {reg_metrics.get('high_risk_recall', 0):.4f}")
-        print(f"     R² Score: {reg_metrics.get('r2', 0):.4f}")
+        print(f"   Single-Stage: HR-Recall={ss.get('high_risk_recall', 0):.4f}, F1={ss.get('f1_macro', 0):.4f}, PR-AUC={ss.get('high_risk_pr_auc', 0):.4f}")
+        if cs:
+            print(f"   Cascade:     HR-Recall={cs.get('high_risk_recall', 0):.4f}, F1={cs.get('f1_macro', 0):.4f}, PR-AUC={cs.get('high_risk_pr_auc', 0):.4f}")
+        else:
+            print(f"   Cascade:     No data (insufficient samples/folds)")
 
 def compare_ordinal_vs_no_ordinal(no_ordinal_results, ordinal_results):
     """Compare ordinal vs no ordinal performance"""
@@ -459,45 +542,18 @@ def compare_ordinal_vs_no_ordinal(no_ordinal_results, ordinal_results):
         print(f"     F1-Macro: {ord_metrics.get('f1_macro', 0):.4f}")
         print(f"     High-Risk Recall: {ord_metrics.get('high_risk_recall', 0):.4f}")
 
-def select_best_architecture(phase1_results, phase2_results, phase3_results):
-    """Select the best architecture based on high-risk recall"""
-    print(f"\n🏆 SELECTING BEST ARCHITECTURE")
+def select_best_architecture_simple(unified_results, cascade_results):
+    print(f"\n🏆 SELECTING BEST ARCHITECTURE (Unified vs Cascade)")
     print("-" * 40)
-    
-    # Compare all approaches
-    approaches = {
-        'Unified Classification': phase1_results['unified'],
-        'Individual Classification': phase1_results['individual'],
-        'Regression': phase2_results['regression'],
-        'Ordinal (Cost-Sensitive)': phase3_results['ordinal']
-    }
-    
-    best_approach = None
-    best_high_risk_recall = 0
-    
-    for approach_name, results in approaches.items():
-        avg_high_risk_recall = 0
-        count = 0
-        
-        for target_name, target_results in results.items():
-            if 'avg_metrics' in target_results and 'high_risk_recall' in target_results['avg_metrics']:
-                avg_high_risk_recall += target_results['avg_metrics']['high_risk_recall']
-                count += 1
-        
-        if count > 0:
-            avg_high_risk_recall /= count
-            print(f"   {approach_name}: {avg_high_risk_recall:.4f}")
-            
-            if avg_high_risk_recall > best_high_risk_recall:
-                best_high_risk_recall = avg_high_risk_recall
-                best_approach = approach_name
-    
-    print(f"\n🏆 BEST APPROACH: {best_approach}")
-    print(f"   High-Risk Recall: {best_high_risk_recall:.4f}")
-    
-    return best_approach
+    ss_vals = [v.get('avg_metrics', {}).get('high_risk_recall', 0) for v in unified_results.values() if v and 'avg_metrics' in v]
+    cs_vals = [v.get('avg_metrics', {}).get('high_risk_recall', 0) for v in cascade_results.values() if v and 'avg_metrics' in v]
+    ss_hr = float(np.mean(ss_vals)) if ss_vals else 0.0
+    cs_hr = float(np.mean(cs_vals)) if cs_vals else 0.0
+    print(f"   Unified (Single-Stage) HR-Recall: {ss_hr:.4f}")
+    print(f"   Cascade HR-Recall:              {cs_hr:.4f}")
+    return 'Two-Stage Cascade' if cs_hr >= ss_hr else 'Single-Stage (Unified)'
 
-def save_step7_results(phase1_results, phase2_results, phase3_results, best_approach):
+def save_step7_results(phase1_results, phase2_results, best_approach):
     """Save comprehensive Step 7 results"""
     print(f"\n💾 Saving Step 7 Results")
     print("-" * 30)
@@ -508,8 +564,7 @@ def save_step7_results(phase1_results, phase2_results, phase3_results, best_appr
     # Save detailed results
     all_results = {
         'phase1_unified_vs_individual': phase1_results,
-        'phase2_classification_vs_regression': phase2_results,
-        'phase3_ordinal_vs_no_ordinal': phase3_results,
+        'phase2_two_stage_cascade': phase2_results,
         'best_approach': best_approach,
         'execution_date': datetime.now().isoformat()
     }
@@ -520,19 +575,16 @@ def save_step7_results(phase1_results, phase2_results, phase3_results, best_appr
     # Create summary
     summary = {
         'execution_date': datetime.now().isoformat(),
-        'approach': 'model_architecture_experiments_3_phases',
-        'phases_tested': 3,
+        'approach': 'model_architecture_experiments_revised',
+        'phases_tested': 2,
         'best_approach': best_approach,
         'key_components': {
             'step4_features': 'Optimized 27 features',
             'step5_validation': 'Rolling Window CV',
-            'step6_weights': 'Enhanced sample weights with cost-sensitive ordinal learning',
+            'step6_handling': 'Class-balanced weights, calibration, prior correction, thresholds',
             'efficient_training': 'Reused results from previous phases'
         },
-        'expected_performance': {
-            'high_risk_recall_target': '15-25%',
-            'ordinal_advantage': 'Better business alignment through cost-sensitive learning'
-        }
+        'evaluation_metrics': ['high_risk_recall', 'f1_macro', 'balanced_accuracy', 'cohen_kappa', 'high_risk_pr_auc', 'stability']
     }
     
     with open(f'{results_dir}/step7_summary.json', 'w', encoding='utf-8') as f:
@@ -548,34 +600,29 @@ def main():
     # Load Step 4 data
     df, X, y, exclude_cols, target_cols = load_step4_data()
     
-    print(f"📊 Testing 3 phases across {len(target_cols)} targets")
+    print(f"📊 Testing 2 phases across {len(target_cols)} targets")
     print(f"🎯 Targets: {target_cols}")
     print(f"📈 Features: {X.shape[1]}")
     print(f"📅 Using Rolling Window CV (Step 5)")
-    print(f"⚖️ Using Enhanced Sample Weights (Step 6)")
-    print(f"💰 Cost-sensitive ordinal learning")
+    print(f"⚖️ Applying Step 6 handling (EENS weights, calibration, prior correction, thresholds)")
     
     # Phase 1: Unified vs Individual
     phase1_results = phase1_unified_vs_individual(X, y, target_cols)
     
-    # Phase 2: Classification vs Regression
-    phase2_results = phase2_classification_vs_regression(X, y, target_cols, phase1_results)
+    # Phase 2: Two-stage cascade
+    phase2_results = phase2_two_stage_cascade(X, y, target_cols)
     
-    # Phase 3: Ordinal vs No Ordinal
-    phase3_results = phase3_ordinal_vs_no_ordinal(X, y, target_cols, phase2_results)
-    
-    # Select best approach
-    best_approach = select_best_architecture(phase1_results, phase2_results, phase3_results)
+    # Compare Unified vs Cascade and select best
+    compare_cascade_vs_single_stage(phase1_results['unified'], phase2_results)
+    best_approach = select_best_architecture_simple(phase1_results['unified'], phase2_results)
     
     # Save results
-    save_step7_results(phase1_results, phase2_results, phase3_results, best_approach)
+    save_step7_results(phase1_results, phase2_results, best_approach)
     
     print(f"\n🎉 STEP 7 COMPLETED!")
     print("=" * 60)
     print("✅ Phase 1: Unified vs Individual models tested")
-    print("✅ Phase 2: Classification vs Regression compared")
-    print("✅ Phase 3: Ordinal vs No Ordinal evaluated")
-    print("✅ Cost-sensitive ordinal learning implemented")
+    print("✅ Phase 2: Two-Stage Cascade evaluated")
     print("✅ Efficient training with result reuse")
     print(f"🏆 Best Architecture: {best_approach}")
     

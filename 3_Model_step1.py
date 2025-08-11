@@ -23,6 +23,11 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, f1_score, classification_report, accuracy_score, precision_score, recall_score
 import xgboost as xgb
+from sklearn.neural_network import MLPClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+import joblib
 from typing import Dict, List, Tuple, Optional
 import warnings
 import os
@@ -99,7 +104,9 @@ class ClassificationBaselineRiskModel:
         self.X_test = None
         self.y_train = {}
         self.y_test = {}
+        # Nested structure: {model_name: {target_name: fitted_model}}
         self.models = {}
+        # Nested predictions: {model_name: {target_name: {'classes': np.ndarray, 'actual': np.ndarray}}}
         self.predictions = {}
         self.feature_columns = None
         
@@ -296,67 +303,99 @@ class ClassificationBaselineRiskModel:
             Dictionary of trained models
         """
         print("\n" + "="*60)
-        print("3️⃣ MODEL TRAINING (CLASSIFICATION)")
+        print("3️⃣ MODEL TRAINING (CLASSIFICATION) - XGBoost vs MLP vs RandomForest")
         print("="*60)
         
-        models = {}
+        model_store: Dict[str, Dict[str, object]] = {}
         xgb_params = self.config.get('xgb_params', {})
-        
-        # Default parameters for CLASSIFICATION model
-        standard_params = {
+
+        # XGBoost baseline
+        xgb_defaults = {
             'objective': 'multi:softprob',
-            'num_class': 4,  # 4 classes: 0, 1, 2, 3
+            'num_class': 4,
             'enable_missing': True,
             'random_state': 42,
             'verbosity': 0,
             'n_jobs': -1,
         }
-        standard_params.update(xgb_params)
-        
-        print(f"🔧 XGBoost parameters: {standard_params}")
-        print(f"📈 Training {len(self.y_train)} separate models with target-specific filtering...")
-        
-        for target_name, y_train_values in self.y_train.items():
-            print(f"\n   🎯 Training model for {target_name}...")
-            
-            try:
-                # Filter training data for this specific target (remove NaN values)
-                valid_mask = ~pd.isna(y_train_values)
-                X_train_filtered = self.X_train[valid_mask]
-                y_train_filtered = y_train_values[valid_mask]
-                
-                # Skip if no valid data
-                if len(y_train_filtered) == 0:
-                    print(f"      ❌ No valid training data for {target_name}")
+        xgb_defaults.update(xgb_params)
+
+        # MLP baseline (with scaling)
+        mlp_model = Pipeline(steps=[
+            ('scaler', StandardScaler(with_mean=False)),
+            ('mlp', MLPClassifier(hidden_layer_sizes=(256, 64), activation='relu', alpha=1e-4,
+                                  batch_size=512, learning_rate_init=1e-3, max_iter=100,
+                                  early_stopping=True, n_iter_no_change=5, random_state=42))
+        ])
+
+        # RandomForest baseline
+        rf_model = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=None,
+            min_samples_leaf=2,
+            n_jobs=-1,
+            random_state=42,
+        )
+
+        candidates = {
+            'xgboost': xgb.XGBClassifier(**xgb_defaults),
+            'mlp': mlp_model,
+            'random_forest': rf_model,
+        }
+
+        print(f"🔧 Models to train: {list(candidates.keys())}")
+        print(f"📈 Training separate models per target for each algorithm with target-specific filtering...")
+
+        for model_name, estimator in candidates.items():
+            print(f"\n==============================")
+            print(f"🚀 Training algorithm: {model_name}")
+            per_target_models: Dict[str, object] = {}
+            for target_name, y_train_values in self.y_train.items():
+                print(f"\n   🎯 Training model for {target_name}...")
+                try:
+                    valid_mask = ~pd.isna(y_train_values)
+                    X_train_filtered = self.X_train[valid_mask]
+                    y_train_filtered = y_train_values[valid_mask]
+                    if len(y_train_filtered) == 0:
+                        print(f"      ❌ No valid training data for {target_name}")
+                        continue
+                    y_train_filtered = y_train_filtered.astype(int)
+
+                    print(f"      📊 Training samples: {len(y_train_filtered):,} (filtered from {len(y_train_values):,})")
+                    print(f"      🎯 Target classes: {sorted(np.unique(y_train_filtered))}")
+
+                    # Fit a fresh clone per target to avoid estimator reuse side-effects
+                    if model_name == 'xgboost':
+                        model = xgb.XGBClassifier(**xgb_defaults)
+                    elif model_name == 'mlp':
+                        model = Pipeline(steps=[
+                            ('scaler', StandardScaler(with_mean=False)),
+                            ('mlp', MLPClassifier(hidden_layer_sizes=(256, 64), activation='relu', alpha=1e-4,
+                                                  batch_size=512, learning_rate_init=1e-3, max_iter=100,
+                                                  early_stopping=True, n_iter_no_change=5, random_state=42))
+                        ])
+                    else:
+                        model = RandomForestClassifier(
+                            n_estimators=300, max_depth=None, min_samples_leaf=2, n_jobs=-1, random_state=42
+                        )
+
+                    print(f"      🔄 Training {model_name}...")
+                    model.fit(X_train_filtered, y_train_filtered)
+                    per_target_models[target_name] = model
+
+                    pred = model.predict(X_train_filtered)
+                    accuracy = accuracy_score(y_train_filtered, pred)
+                    f1 = f1_score(y_train_filtered, pred, average='macro')
+                    print(f"      ✅ {model_name} - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
+                except Exception as e:
+                    print(f"      ❌ Error training {model_name} for {target_name}: {e}")
                     continue
-                
-                # Ensure target values are integers for classification
-                y_train_filtered = y_train_filtered.astype(int)
-                
-                print(f"      📊 Training samples: {len(y_train_filtered):,} (filtered from {len(y_train_values):,})")
-                print(f"      🎯 Target classes: {sorted(np.unique(y_train_filtered))}")
-                
-                # Train CLASSIFICATION model
-                print(f"      🔄 Training classification model...")
-                model = xgb.XGBClassifier(**standard_params)
-                model.fit(X_train_filtered, y_train_filtered)
-                models[target_name] = model
-                
-                # Quick training summary
-                pred = model.predict(X_train_filtered)
-                accuracy = accuracy_score(y_train_filtered, pred)
-                f1 = f1_score(y_train_filtered, pred, average='macro')
-                
-                print(f"      ✅ Model - Accuracy: {accuracy:.4f}, F1: {f1:.4f}")
-                
-            except Exception as e:
-                print(f"      ❌ Error training {target_name}: {e}")
-                continue
-        
-        self.models = models
-        print(f"\n✅ Training completed: {len(models)} models ready")
-        
-        return models
+            model_store[model_name] = per_target_models
+
+        self.models = model_store
+        total_models = sum(len(m) for m in model_store.values())
+        print(f"\n✅ Training completed: {total_models} models across {len(model_store)} algorithms ready")
+        return model_store
     
     def predict_and_evaluate(self) -> Dict:
         """
@@ -366,79 +405,68 @@ class ClassificationBaselineRiskModel:
             Dictionary of predictions and metrics
         """
         print("\n" + "="*60)
-        print("4️⃣ PREDICTION & EVALUATION (CLASSIFICATION)")
+        print("4️⃣ PREDICTION & EVALUATION (CLASSIFICATION) - by algorithm")
         print("="*60)
         
-        predictions = {}
-        metrics = {}
-        
-        print(f"🔮 Generating predictions for {len(self.models)} models...")
-        
-        # Evaluate models
-        for target_name, model in self.models.items():
-            print(f"\n   📊 Evaluating {target_name}...")
-            
-            try:
-                # Filter test data for this specific target (remove NaN values)
-                y_test_values = self.y_test[target_name]
-                valid_mask = ~pd.isna(y_test_values)
-                X_test_filtered = self.X_test[valid_mask]
-                y_test_filtered = y_test_values[valid_mask]
-                
-                # Skip if no valid test data
-                if len(y_test_filtered) == 0:
-                    print(f"      ❌ No valid test data for {target_name}")
+        all_predictions: Dict[str, Dict] = {}
+        print(f"🔮 Generating predictions for algorithms: {list(self.models.keys())}")
+
+        for model_name, per_target_models in self.models.items():
+            print(f"\n==============================")
+            print(f"🧪 Evaluating algorithm: {model_name}")
+            predictions = {}
+            metrics = {}
+            for target_name, model in per_target_models.items():
+                print(f"\n   📊 Evaluating {target_name}...")
+                try:
+                    y_test_values = self.y_test[target_name]
+                    valid_mask = ~pd.isna(y_test_values)
+                    X_test_filtered = self.X_test[valid_mask]
+                    y_test_filtered = y_test_values[valid_mask]
+                    if len(y_test_filtered) == 0:
+                        print(f"      ❌ No valid test data for {target_name}")
+                        continue
+                    y_test_filtered = y_test_filtered.astype(int)
+                    print(f"      📊 Test samples: {len(y_test_filtered):,} (filtered from {len(y_test_values):,})")
+
+                    y_pred_classes = model.predict(X_test_filtered)
+                    predictions[target_name] = {
+                        'classes': y_pred_classes,
+                        'actual': y_test_filtered
+                    }
+                    accuracy = accuracy_score(y_test_filtered, y_pred_classes)
+                    f1_macro = f1_score(y_test_filtered, y_pred_classes, average='macro')
+                    precision_macro = precision_score(y_test_filtered, y_pred_classes, average='macro')
+                    recall_macro = recall_score(y_test_filtered, y_pred_classes, average='macro')
+                    metrics[target_name] = {
+                        'accuracy': accuracy,
+                        'f1_macro': f1_macro,
+                        'precision_macro': precision_macro,
+                        'recall_macro': recall_macro,
+                        'prediction_distribution': dict(pd.Series(y_pred_classes).value_counts().sort_index())
+                    }
+                    print(f"      📈 Accuracy: {accuracy:.4f}")
+                    print(f"      🎯 F1-Score (Macro): {f1_macro:.4f}")
+                    print(f"      📊 Precision (Macro): {precision_macro:.4f}")
+                    print(f"      📊 Recall (Macro): {recall_macro:.4f}")
+                except Exception as e:
+                    print(f"      ❌ Error evaluating {model_name} for {target_name}: {e}")
                     continue
-                
-                # Ensure target values are integers for classification
-                y_test_filtered = y_test_filtered.astype(int)
-                
-                print(f"      📊 Test samples: {len(y_test_filtered):,} (filtered from {len(y_test_values):,})")
-                
-                # Generate CLASSIFICATION predictions
-                y_pred_classes = model.predict(X_test_filtered)
-                # Store predictions
-                predictions[target_name] = {
-                    'classes': y_pred_classes,
-                    'actual': y_test_filtered
-                }
-                
-                # Calculate metrics
-                accuracy = accuracy_score(y_test_filtered, y_pred_classes)
-                f1_macro = f1_score(y_test_filtered, y_pred_classes, average='macro')
-                precision_macro = precision_score(y_test_filtered, y_pred_classes, average='macro')
-                recall_macro = recall_score(y_test_filtered, y_pred_classes, average='macro')
-                
-                # Store metrics
-                metrics[target_name] = {
-                    'accuracy': accuracy,
-                    'f1_macro': f1_macro,
-                    'precision_macro': precision_macro,
-                    'recall_macro': recall_macro,
-                    'prediction_distribution': dict(pd.Series(y_pred_classes).value_counts().sort_index())
-                }
-                
-                print(f"      📈 Accuracy: {accuracy:.4f}")
-                print(f"      🎯 F1-Score (Macro): {f1_macro:.4f}")
-                print(f"      📊 Precision (Macro): {precision_macro:.4f}")
-                print(f"      📊 Recall (Macro): {recall_macro:.4f}")
-                
-            except Exception as e:
-                print(f"      ❌ Error evaluating {target_name}: {e}")
-                continue
-        
-        self.predictions = predictions
-        
-        # Print evaluation summary
-        print(f"\n📋 EVALUATION SUMMARY:")
-        if metrics:
-            avg_accuracy = np.mean([m['accuracy'] for m in metrics.values()])
-            avg_f1 = np.mean([m['f1_macro'] for m in metrics.values()])
-            
-            print(f"   📊 Average Accuracy: {avg_accuracy:.4f}")
-            print(f"   📊 Average F1-Score: {avg_f1:.4f}")
-        
-        return predictions
+
+            self.predictions[model_name] = predictions
+
+            # Print evaluation summary
+            print(f"\n📋 EVALUATION SUMMARY ({model_name}):")
+            if metrics:
+                avg_accuracy = np.mean([m['accuracy'] for m in metrics.values()])
+                avg_f1 = np.mean([m['f1_macro'] for m in metrics.values()])
+                print(f"   📊 Average Accuracy: {avg_accuracy:.4f}")
+                print(f"   📊 Average F1-Score: {avg_f1:.4f}")
+
+            # Save metrics per model
+            self._save_performance_metrics(model_name, self._format_metrics_for_saving(metrics))
+
+        return self.predictions
     
     def create_visualizations(self):
         """
@@ -452,131 +480,99 @@ class ClassificationBaselineRiskModel:
             print("❌ No predictions available for visualization")
             return
         
-        # Create figure with subplots
-        n_targets = len(self.predictions)
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('Classification Baseline Model Performance - Step 1', fontsize=16, fontweight='bold')
-        
-        axes = axes.flatten()
-        
-        # 1. Prediction vs Actual scatter plots
-        for i, (target_name, pred_data) in enumerate(self.predictions.items()):
-            if i >= 4:  # Only show first 4
-                break
-                
-            ax = axes[i]
-            y_true = pred_data['actual']
-            y_pred = pred_data['classes']
+        # For each algorithm, create plots and summaries
+        for model_name, preds in self.predictions.items():
+            # Create figure with subplots
+            n_targets = len(preds)
+            fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+            fig.suptitle(f'Classification Baseline Performance - {model_name.upper()}', fontsize=16, fontweight='bold')
+            axes = axes.flatten()
             
-            # Scatter plot
-            ax.scatter(y_true, y_pred, alpha=0.6, s=20)
-            
-            # Perfect prediction line
-            min_val, max_val = 0, 3
-            ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, linewidth=2)
-            
-            # Formatting
-            ax.set_xlabel('Actual Risk Level')
-            ax.set_ylabel('Predicted Risk Level')
-            ax.set_title(f'{target_name} - Predictions vs Actual (Classification)')
-            ax.grid(True, alpha=0.3)
-            ax.set_xlim(-0.5, 3.5)
-            ax.set_ylim(-0.5, 3.5)
-            
-            # Add metrics text
-            accuracy = accuracy_score(y_true, y_pred)
-            f1_macro = f1_score(y_true, y_pred, average='macro')
-            ax.text(0.05, 0.95, f'Accuracy: {accuracy:.3f}\nF1: {f1_macro:.3f}', 
-                   transform=ax.transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        plt.tight_layout()
-        self._save_plot("01_classification_prediction_vs_actual")
-        
-        # 2. Feature Importance Analysis
-        self._plot_feature_importance()
-        
-        # 3. Performance Summary Table
-        self._print_performance_summary()
+            # 1. Prediction vs Actual scatter plots per target (up to 4)
+            for i, (target_name, pred_data) in enumerate(preds.items()):
+                if i >= 4:
+                    break
+                ax = axes[i]
+                y_true = pred_data['actual']
+                y_pred = pred_data['classes']
+                ax.scatter(y_true, y_pred, alpha=0.6, s=20)
+                min_val, max_val = 0, 3
+                ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, linewidth=2)
+                ax.set_xlabel('Actual Risk Level')
+                ax.set_ylabel('Predicted Risk Level')
+                ax.set_title(f'{target_name} - Predictions vs Actual')
+                ax.grid(True, alpha=0.3)
+                ax.set_xlim(-0.5, 3.5)
+                ax.set_ylim(-0.5, 3.5)
+                accuracy = accuracy_score(y_true, y_pred)
+                f1_macro = f1_score(y_true, y_pred, average='macro')
+                ax.text(0.05, 0.95, f'Accuracy: {accuracy:.3f}\nF1: {f1_macro:.3f}',
+                       transform=ax.transAxes, verticalalignment='top',
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            plt.tight_layout()
+            self._save_plot(f"{model_name}_01_classification_prediction_vs_actual")
+
+            # 2. Feature Importance Analysis (only for models with attribute)
+            self._plot_feature_importance(model_name)
+
+            # 3. Performance summary
+            self._print_performance_summary(model_name)
     
-    def _plot_feature_importance(self):
-        """Plot feature importance for all CLASSIFICATION models"""
-        if not self.models:
+    def _plot_feature_importance(self, model_name: str):
+        """Plot feature importance for models that support it (XGBoost/RandomForest)."""
+        if model_name not in self.models:
             return
-            
-        print("\n📊 Feature Importance Analysis (Classification)...")
-        
-        # Collect feature importance from all models
+        per_target = self.models[model_name]
+        print(f"\n📊 Feature Importance Analysis (Classification) - {model_name}")
         importance_data = {}
-        for target_name, model in self.models.items():
-            if hasattr(model, 'feature_importances_'):
-                importance_data[target_name] = model.feature_importances_
-        
+        for target_name, model in per_target.items():
+            # For pipelines, extract final estimator
+            estimator = model
+            if isinstance(model, Pipeline):
+                estimator = model.named_steps.get('mlp', model)
+            if hasattr(estimator, 'feature_importances_'):
+                importance_data[target_name] = estimator.feature_importances_
         if not importance_data:
-            print("   ❌ No feature importance data available")
+            print("   ❌ No feature importance data available for this algorithm")
             return
-        
-        # Create feature importance DataFrame
         importance_df = pd.DataFrame(importance_data, index=self.feature_columns)
-        
-        # Calculate average importance across all models
         importance_df['avg_importance'] = importance_df.mean(axis=1)
-        
-        # Get top 20 most important features
         top_features = importance_df.nlargest(20, 'avg_importance')
-        
-        # Plot with improved layout for Korean text
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 12))
-        fig.suptitle('Feature Importance Analysis (Classification)', fontsize=16, fontweight='bold')
-        
-        # Average importance (horizontal bar chart)
+        fig.suptitle(f'Feature Importance Analysis (Classification) - {model_name.upper()}', fontsize=16, fontweight='bold')
         top_features['avg_importance'].plot(kind='barh', ax=ax1)
-        ax1.set_title('Top 20 Features - Average Importance (Classification)')
+        ax1.set_title('Top 20 Features - Average Importance')
         ax1.set_xlabel('Importance Score')
-        
-        # Importance by target (horizontal bar chart to avoid x-axis label overlap)
         target_cols = [col for col in top_features.columns if col != 'avg_importance']
         if target_cols:
-            # Transpose data for horizontal plotting
             plot_data = top_features[target_cols].T
             plot_data.plot(kind='barh', ax=ax2)
-            ax2.set_title('Feature Importance by Target Variable (Classification)')
+            ax2.set_title('Feature Importance by Target Variable')
             ax2.set_xlabel('Importance Score')
             ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        
-        # Adjust layout to prevent label cutoff
         plt.subplots_adjust(bottom=0.15, left=0.1, right=0.85, top=0.9)
-        self._save_plot("02_classification_feature_importance")
-        
-        # Print top features
-        print(f"\n🏆 TOP 10 MOST IMPORTANT FEATURES (Classification):")
+        self._save_plot(f"{model_name}_02_classification_feature_importance")
+        print(f"\n🏆 TOP 10 MOST IMPORTANT FEATURES ({model_name}):")
         for i, (feature, importance) in enumerate(top_features['avg_importance'].head(10).items(), 1):
             print(f"   {i:2d}. {feature}: {importance:.4f}")
     
-    def _print_performance_summary(self):
-        """Print comprehensive CLASSIFICATION performance summary and save to files"""
-        if not self.predictions:
+    def _print_performance_summary(self, model_name: str):
+        """Print comprehensive summary for a specific algorithm using cached predictions."""
+        if model_name not in self.predictions:
             return
-            
-        print(f"\n📊 COMPREHENSIVE CLASSIFICATION PERFORMANCE SUMMARY")
+        print(f"\n📊 COMPREHENSIVE CLASSIFICATION PERFORMANCE SUMMARY - {model_name}")
         print("-" * 60)
-        
-        # Create summary table
+        preds = self.predictions[model_name]
         summary_data = []
-        for target_name, pred_data in self.predictions.items():
+        for target_name, pred_data in preds.items():
             y_true = pred_data['actual']
             y_pred = pred_data['classes']
-            
-            # Calculate detailed metrics
             accuracy = accuracy_score(y_true, y_pred)
             f1_macro = f1_score(y_true, y_pred, average='macro')
             precision_macro = precision_score(y_true, y_pred, average='macro')
             recall_macro = recall_score(y_true, y_pred, average='macro')
-            
-            # Class distribution
             true_dist = pd.Series(y_true).value_counts().sort_index()
             pred_dist = pd.Series(y_pred).value_counts().sort_index()
-            
             summary_data.append({
                 'Target': target_name,
                 'Accuracy': f"{accuracy:.4f}",
@@ -586,8 +582,6 @@ class ClassificationBaselineRiskModel:
                 'True_Dist': dict(true_dist),
                 'Pred_Dist': dict(pred_dist)
             })
-        
-        # Print summary table
         for data in summary_data:
             print(f"\n🎯 {data['Target']}:")
             print(f"   • Accuracy: {data['Accuracy']}")
@@ -596,60 +590,81 @@ class ClassificationBaselineRiskModel:
             print(f"   • Recall (Macro): {data['Recall_Macro']}")
             print(f"   • Actual distribution: {data['True_Dist']}")
             print(f"   • Predicted distribution: {data['Pred_Dist']}")
-        
-        # Save performance summary to files
-        self._save_performance_metrics(summary_data)
     
-    def _save_performance_metrics(self, summary_data: List[Dict]):
+    def _save_performance_metrics(self, model_name: str, summary_data: List[Dict]):
         """
-        Save CLASSIFICATION performance metrics to CSV and JSON files
+        Save CLASSIFICATION performance metrics to CSV and JSON files for a specific algorithm
         
         Args:
-            summary_data: List of performance data dictionaries
+            model_name: Algorithm name
+            summary_data: List of performance data dictionaries (already flattened)
         """
         print("\n💾 Saving CLASSIFICATION performance metrics to files...")
         
+        # Nothing to save (e.g., model failed to train for all targets)
+        if not summary_data:
+            print("  ⚠️ No metrics to save for this algorithm; skipping.")
+            return
+        
         # Prepare data for CSV (flatten dictionaries)
-        csv_data = []
-        for data in summary_data:
-            csv_row = {
-                'Target': data['Target'],
-                'Accuracy': float(data['Accuracy']),
-                'F1_Macro': float(data['F1_Macro']),
-                'Precision_Macro': float(data['Precision_Macro']),
-                'Recall_Macro': float(data['Recall_Macro']),
-            }
-            # Add distribution data
-            for level in [0, 1, 2, 3]:
-                csv_row[f'True_Risk_{level}'] = data['True_Dist'].get(level, 0)
-                csv_row[f'Pred_Risk_{level}'] = data['Pred_Dist'].get(level, 0)
-            csv_data.append(csv_row)
+        csv_data = summary_data
         
         # Save CSV
         csv_df = pd.DataFrame(csv_data)
-        csv_path = os.path.join(self.results_dir, 'metrics', 'step1_performance_summary.csv')
+        csv_path = os.path.join(self.results_dir, 'metrics', f'step1_performance_summary_{model_name}.csv')
         csv_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-        print(f"  📊 Classification performance summary saved: step1_performance_summary.csv")
+        print(f"  📊 Classification performance summary saved: step1_performance_summary_{model_name}.csv")
         
         # Save detailed JSON
-        json_path = os.path.join(self.results_dir, 'metrics', 'step1_detailed_results.json')
+        json_path = os.path.join(self.results_dir, 'metrics', f'step1_detailed_results_{model_name}.json')
         with open(json_path, 'w', encoding='utf-8') as f:
             import json
             json.dump(summary_data, f, indent=2, default=str, ensure_ascii=False)
-        print(f"  📄 Classification detailed results saved: step1_detailed_results.json")
+        print(f"  📄 Classification detailed results saved: step1_detailed_results_{model_name}.json")
         
         # Save model files
-        self._save_models()
+        self._save_models(model_name)
+
+    def _format_metrics_for_saving(self, metrics: Dict[str, Dict]) -> List[Dict]:
+        """
+        Flatten per-target metrics dict into a list of rows suitable for CSV/JSON saving.
+        Includes an additional 'AVERAGE' row if metrics exist.
+        """
+        formatted_rows: List[Dict] = []
+        for target_name, metric_values in metrics.items():
+            formatted_rows.append({
+                'target': target_name,
+                'accuracy': float(metric_values.get('accuracy', np.nan)),
+                'f1_macro': float(metric_values.get('f1_macro', np.nan)),
+                'precision_macro': float(metric_values.get('precision_macro', np.nan)),
+                'recall_macro': float(metric_values.get('recall_macro', np.nan)),
+                'prediction_distribution': metric_values.get('prediction_distribution', {})
+            })
+        if formatted_rows:
+            avg_row = {
+                'target': 'AVERAGE',
+                'accuracy': float(np.nanmean([row['accuracy'] for row in formatted_rows])),
+                'f1_macro': float(np.nanmean([row['f1_macro'] for row in formatted_rows])),
+                'precision_macro': float(np.nanmean([row['precision_macro'] for row in formatted_rows])),
+                'recall_macro': float(np.nanmean([row['recall_macro'] for row in formatted_rows])),
+                'prediction_distribution': {}
+            }
+            formatted_rows.append(avg_row)
+        return formatted_rows
     
-    def _save_models(self):
-        """Save trained CLASSIFICATION models to files"""
+    def _save_models(self, model_name: str):
+        """Save trained CLASSIFICATION models to files for a specific algorithm"""
         print("\n💾 Saving trained CLASSIFICATION models...")
-        
-        # Save models
-        for target_name, model in self.models.items():
-            model_path = os.path.join(self.results_dir, 'models', f'{target_name}_classification_model.json')
-            model.save_model(model_path)
-            print(f"  🤖 Classification model saved: {target_name}_classification_model.json")
+        if model_name not in self.models:
+            return
+        for target_name, model in self.models[model_name].items():
+            if model_name == 'xgboost':
+                model_path = os.path.join(self.results_dir, 'models', f'{target_name}_{model_name}_model.json')
+                model.save_model(model_path)
+            else:
+                model_path = os.path.join(self.results_dir, 'models', f'{target_name}_{model_name}_model.joblib')
+                joblib.dump(model, model_path)
+            print(f"  🤖 Classification model saved: {os.path.basename(model_path)}")
     
     def run_step1_classification_pipeline(self):
         """
@@ -665,13 +680,13 @@ class ClassificationBaselineRiskModel:
             # Step 2: Preprocess data
             self.preprocess_data()
             
-            # Step 3: Train CLASSIFICATION models
+            # Step 3: Train models for all three algorithms
             self.train_models()
-            
-            # Step 4: Predict and evaluate
+
+            # Step 4: Predict and evaluate per algorithm
             self.predict_and_evaluate()
-            
-            # Step 5: Create visualizations
+
+            # Step 5: Create per-algorithm visualizations and summaries
             self.create_visualizations()
             
             print("\n🎉 STEP 1 CLASSIFICATION COMPLETED SUCCESSFULLY!")
@@ -690,14 +705,20 @@ class ClassificationBaselineRiskModel:
         print(f"\n📁 CLASSIFICATION RESULTS SUMMARY:")
         print(f"   All outputs saved to: {self.results_dir}")
         print(f"   📊 Visualizations:")
-        print(f"      • 01_classification_prediction_vs_actual.png")
-        print(f"      • 02_classification_feature_importance.png")
+        print(f"      • xgboost_01_classification_prediction_vs_actual.png")
+        print(f"      • xgboost_02_classification_feature_importance.png")
+        print(f"      • random_forest_01_classification_prediction_vs_actual.png")
+        print(f"      • random_forest_02_classification_feature_importance.png")
+        print(f"      • mlp_01_classification_prediction_vs_actual.png")
         print(f"   📈 Metrics:")
-        print(f"      • step1_performance_summary.csv")
-        print(f"      • step1_detailed_results.json")
+        print(f"      • step1_performance_summary_xgboost.csv / step1_detailed_results_xgboost.json")
+        print(f"      • step1_performance_summary_random_forest.csv / step1_detailed_results_random_forest.json")
+        print(f"      • step1_performance_summary_mlp.csv / step1_detailed_results_mlp.json")
         print(f"   🤖 Models:")
         for target in self.config['target_columns']:
-            print(f"      • {target}_classification_model.json")
+            print(f"      • {target}_xgboost_model.json")
+            print(f"      • {target}_random_forest_model.joblib")
+            print(f"      • {target}_mlp_model.joblib")
         print(f"\n💡 Use these files for comparison with other steps!")
 
 

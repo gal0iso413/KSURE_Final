@@ -79,8 +79,30 @@ class DatasetCreator:
             # Ensure date column is datetime
             self.base_data[date_col] = pd.to_datetime(self.base_data[date_col], format='%Y%m%d')
             
+            # Add regime indicators for risk criteria change points
+            change_point_1 = datetime(2019, 11, 12)
+            change_point_2 = datetime(2021, 3, 4)
+            
+            # Categorical regime id: 0 = pre-2019-11-12, 1 = 2019-11-12..2021-03-03, 2 = 2021-03-04+
+            mask_pre = self.base_data[date_col] < change_point_1
+            mask_mid = (self.base_data[date_col] >= change_point_1) & (self.base_data[date_col] < change_point_2)
+            mask_post = self.base_data[date_col] >= change_point_2
+
+            # Use pandas nullable integer dtype to allow missing values if any
+            regime_series = pd.Series(pd.NA, index=self.base_data.index, dtype='Int64')
+            regime_series[mask_pre] = 0
+            regime_series[mask_mid] = 1
+            regime_series[mask_post] = 2
+            self.base_data['criteria_regime'] = regime_series
+            
             print(f"📅 Date column: {date_col}")
             print(f"📅 Date range: {self.base_data[date_col].min()} to {self.base_data[date_col].max()}")
+            # Regime distribution summary
+            regime_counts = self.base_data['criteria_regime'].value_counts().sort_index()
+            pre_cnt = int(regime_counts.get(0, 0))
+            mid_cnt = int(regime_counts.get(1, 0))
+            post_cnt = int(regime_counts.get(2, 0))
+            print(f"🏷️ Regime counts → pre_20191112: {pre_cnt}, 20191112_20210304: {mid_cnt}, post_20210304: {post_cnt}")
             return self.base_data
             
         except Exception as e:
@@ -822,6 +844,11 @@ class DatasetCreator:
         print(f"📈 Total records: {len(df):,}")
         print(f"📊 Total features: {len(df.columns):,}")
         
+        # Regime summary
+        if 'criteria_regime' in df.columns:
+            regime_counts = df['criteria_regime'].value_counts().sort_index()
+            print(f"\n🏷️ Criteria Regime Distribution (0=pre-20191112, 1=20191112-20210303, 2=post-20210304): {dict(regime_counts)}")
+        
         # Y variable summary
         y_cols = [col for col in df.columns if col.startswith('risk_year')]
         print(f"\n🎯 Y Variables: {len(y_cols)}")
@@ -879,7 +906,8 @@ def get_example_config():
             'grade': 'dataset/KED종합신용정보.csv', 
             'gdp': 'dataset/gdp_data.csv',
             'trade': 'dataset/trade_data.csv',
-            'industry': 'dataset/업종코드.csv'
+            'industry': 'dataset/업종코드.csv',
+            'exchange': 'dataset/exchange_rate_data.csv',
         },
         
         # Table-specific column mappings
@@ -915,6 +943,10 @@ def get_example_config():
                 'industry': {
                     'join_columns': ('업종코드', '업종코드1')  # (x_table_column, base_table_column)
                     # No date_column needed for static mode
+                },
+                'exchange': {
+                    'date_column': 'date', 
+                    # No join_columns specified = market-level data
                 }
             }
         },
@@ -926,6 +958,7 @@ def get_example_config():
             'gdp': None,
             'trade': None,
             'industry': None,
+            'exchange': None,
         },
         
         # Columns to exclude from X variables (applied after include filter)
@@ -934,7 +967,8 @@ def get_example_config():
             'grade': ['KED신용등급구분코드'],
             'gdp': ['quarter'],
             'trade': [],
-            'industry': ['중분류','세세분류']
+            'industry': ['중분류','세세분류'],
+            'exchange': [],
         },
         
         # Lookback periods for each data type
@@ -944,6 +978,7 @@ def get_example_config():
             'gdp': 1,
             'trade': 1,
             'industry': 1,
+            'exchange': 1,
         },
         
         # Period intervals (how many days between periods)
@@ -952,6 +987,7 @@ def get_example_config():
             'grade': 'yearly',        # 30 days for monthly grade updates
             'gdp': 'yearly',
             'trade': 'yearly',
+            'exchange': 'yearly',
             # Options: 'daily'(1), 'weekly'(7), 'monthly'(30), 'quarterly'(90), 'yearly'(365), or integer days
         },
         
@@ -962,6 +998,7 @@ def get_example_config():
             'gdp': 'nearest',
             'trade': 'nearest',
             'industry': 'static',     # Creates: industry_코드, industry_분류명 (no time suffixes)
+            'exchange': 'nearest',
         },
         
         # Aggregation methods for X variables (not used for static mode)
@@ -971,6 +1008,7 @@ def get_example_config():
             'gdp': 'mean',
             'trade': 'mean',    
             # 'industry': not needed for static mode
+            'exchange': 'mean',
         },
         
         # Prediction horizons
@@ -983,6 +1021,7 @@ def get_example_config():
             'gdp': 45,           # GDP data: 45 days after quarter end
             'trade': 30,         # Trade statistics: 30 days comprehensive data
             'industry': 0,       # Industry codes: static/immediate (no delay)
+            'exchange': 1,       # Exchange rate data: 1 day after daily data
         },
         
         # Apply availability delays to make model production-realistic
