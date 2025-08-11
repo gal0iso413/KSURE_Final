@@ -227,17 +227,11 @@ class IndependentTrainingAndEvaluation:
                     y_train_filtered = y_train_filtered.astype(int)
                     y_test_filtered = y_test_filtered.astype(int)
                     
-                    # Train XGBoost model
-                    model = xgb.XGBClassifier(
-                        n_estimators=100,
-                        max_depth=6,
-                        learning_rate=0.1,
-                        random_state=self.config['random_state'],
-                        eval_metric='mlogloss',
-                        n_jobs=-1,
-                        objective='multi:softprob',
-                        num_class=4,
-                    )
+                    # Train XGBoost model with shared baseline params from config
+                    xgb_params = dict(self.config.get('xgb_params', {}))
+                    # Ensure split-level seed consistency
+                    xgb_params.setdefault('random_state', self.config['random_state'])
+                    model = xgb.XGBClassifier(**xgb_params)
                     
                     # Train the model
                     model.fit(X_train_filtered, y_train_filtered)
@@ -766,7 +760,19 @@ def get_step2_config():
         ],
         'target_columns': ['risk_year1', 'risk_year2', 'risk_year3', 'risk_year4'],
         'test_size': 0.2,
-        'random_state': 42
+        'random_state': 42,
+        'xgb_params': {
+            'objective': 'multi:softprob',
+            'num_class': 4,
+            'n_estimators': 100,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'eval_metric': 'mlogloss',
+            'enable_missing': True,
+            'random_state': 42,
+            'verbosity': 0,
+            'n_jobs': -1
+        }
     }
 
 

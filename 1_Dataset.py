@@ -456,22 +456,34 @@ class DatasetCreator:
             Number of days between periods
         """
         interval_config = x_period_intervals.get(data_type, 'monthly')
-        
-        if isinstance(interval_config, int):
-            return interval_config  # Direct days specification
-        elif interval_config == 'daily':
-            return 1
-        elif interval_config == 'weekly':
-            return 7
-        elif interval_config == 'monthly':
-            return 30
-        elif interval_config == 'quarterly':
-            return 90
-        elif interval_config == 'yearly':
-            return 365
-        else:
-            print(f"      ⚠️ Unknown interval '{interval_config}' for {data_type}, using monthly (30 days)")
-            return 30
+
+        mapping = {
+            'daily': 1,
+            'weekly': 7,
+            'monthly': 30,
+            'quarterly': 90,
+            'yearly': 365,
+        }
+
+        # 1) Direct integer-like values (including numpy integer types)
+        if isinstance(interval_config, (int, np.integer)):
+            return max(1, int(interval_config))
+
+        # 2) String values: try known keywords, then numeric strings
+        if isinstance(interval_config, str):
+            s = interval_config.strip().lower()
+            if s in mapping:
+                return mapping[s]
+            try:
+                # Accept numeric strings like "730" or "365.0"
+                days = int(float(s))
+                return max(1, days)
+            except ValueError:
+                pass
+
+        # 3) Fallback
+        print(f"      ⚠️ Unknown interval '{interval_config}' for {data_type}, using monthly (30 days)")
+        return 30
     
     def _apply_availability_delay(self, contract_date: datetime, data_type: str) -> datetime:
         """
@@ -984,7 +996,7 @@ def get_example_config():
         # Period intervals (how many days between periods)
         'x_period_intervals': {
             'financial': 'yearly',  # 365 days for quarterly financial reports
-            'grade': 'yearly',        # 30 days for monthly grade updates
+            'grade': 'yearly',
             'gdp': 'yearly',
             'trade': 'yearly',
             'exchange': 'yearly',

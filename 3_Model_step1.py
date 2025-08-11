@@ -75,12 +75,17 @@ def setup_korean_font():
     
     return korean_font
 
-# Set up Korean font
-setup_korean_font()
-
-# Set style for better plots
+# Set style for better plots (apply style first so font overrides stick)
 plt.style.use('default')
 sns.set_palette("husl")
+
+# Set up Korean font AFTER style and propagate to seaborn
+kf = setup_korean_font()
+try:
+    # Ensure seaborn uses the same font
+    sns.set_theme(rc={'font.family': plt.rcParams.get('font.family', ['sans-serif'])})
+except Exception:
+    pass
 
 
 class ClassificationBaselineRiskModel:
@@ -303,7 +308,7 @@ class ClassificationBaselineRiskModel:
             Dictionary of trained models
         """
         print("\n" + "="*60)
-        print("3️⃣ MODEL TRAINING (CLASSIFICATION) - XGBoost vs MLP vs RandomForest")
+        print("3️⃣ MODEL TRAINING (CLASSIFICATION) - XGBoost (baseline only)")
         print("="*60)
         
         model_store: Dict[str, Dict[str, object]] = {}
@@ -320,27 +325,9 @@ class ClassificationBaselineRiskModel:
         }
         xgb_defaults.update(xgb_params)
 
-        # MLP baseline (with scaling)
-        mlp_model = Pipeline(steps=[
-            ('scaler', StandardScaler(with_mean=False)),
-            ('mlp', MLPClassifier(hidden_layer_sizes=(256, 64), activation='relu', alpha=1e-4,
-                                  batch_size=512, learning_rate_init=1e-3, max_iter=100,
-                                  early_stopping=True, n_iter_no_change=5, random_state=42))
-        ])
-
-        # RandomForest baseline
-        rf_model = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=None,
-            min_samples_leaf=2,
-            n_jobs=-1,
-            random_state=42,
-        )
-
+        # Baseline candidate: XGBoost only
         candidates = {
             'xgboost': xgb.XGBClassifier(**xgb_defaults),
-            'mlp': mlp_model,
-            'random_forest': rf_model,
         }
 
         print(f"🔧 Models to train: {list(candidates.keys())}")
@@ -365,19 +352,8 @@ class ClassificationBaselineRiskModel:
                     print(f"      🎯 Target classes: {sorted(np.unique(y_train_filtered))}")
 
                     # Fit a fresh clone per target to avoid estimator reuse side-effects
-                    if model_name == 'xgboost':
-                        model = xgb.XGBClassifier(**xgb_defaults)
-                    elif model_name == 'mlp':
-                        model = Pipeline(steps=[
-                            ('scaler', StandardScaler(with_mean=False)),
-                            ('mlp', MLPClassifier(hidden_layer_sizes=(256, 64), activation='relu', alpha=1e-4,
-                                                  batch_size=512, learning_rate_init=1e-3, max_iter=100,
-                                                  early_stopping=True, n_iter_no_change=5, random_state=42))
-                        ])
-                    else:
-                        model = RandomForestClassifier(
-                            n_estimators=300, max_depth=None, min_samples_leaf=2, n_jobs=-1, random_state=42
-                        )
+                    # Fresh estimator per target
+                    model = xgb.XGBClassifier(**xgb_defaults)
 
                     print(f"      🔄 Training {model_name}...")
                     model.fit(X_train_filtered, y_train_filtered)
@@ -473,7 +449,7 @@ class ClassificationBaselineRiskModel:
         Create basic visualizations for CLASSIFICATION model performance
         """
         print("\n" + "="*60)
-        print("5️⃣ VISUALIZATION & SUMMARY (CLASSIFICATION)")
+        print("5️⃣ VISUALIZATION & SUMMARY (CLASSIFICATION - XGBoost baseline)")
         print("="*60)
         
         if not self.predictions:
@@ -707,18 +683,11 @@ class ClassificationBaselineRiskModel:
         print(f"   📊 Visualizations:")
         print(f"      • xgboost_01_classification_prediction_vs_actual.png")
         print(f"      • xgboost_02_classification_feature_importance.png")
-        print(f"      • random_forest_01_classification_prediction_vs_actual.png")
-        print(f"      • random_forest_02_classification_feature_importance.png")
-        print(f"      • mlp_01_classification_prediction_vs_actual.png")
         print(f"   📈 Metrics:")
         print(f"      • step1_performance_summary_xgboost.csv / step1_detailed_results_xgboost.json")
-        print(f"      • step1_performance_summary_random_forest.csv / step1_detailed_results_random_forest.json")
-        print(f"      • step1_performance_summary_mlp.csv / step1_detailed_results_mlp.json")
         print(f"   🤖 Models:")
         for target in self.config['target_columns']:
             print(f"      • {target}_xgboost_model.json")
-            print(f"      • {target}_random_forest_model.joblib")
-            print(f"      • {target}_mlp_model.joblib")
         print(f"\n💡 Use these files for comparison with other steps!")
 
 
@@ -748,9 +717,14 @@ def get_step1_classification_config():
         'xgb_params': {
             'objective': 'multi:softprob',
             'num_class': 4,
+            'n_estimators': 100,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'eval_metric': 'mlogloss',
             'enable_missing': True,
             'random_state': 42,
-            'verbosity': 0
+            'verbosity': 0,
+            'n_jobs': -1
         }
     }
 
