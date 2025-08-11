@@ -31,8 +31,8 @@
 - **Multicollinearity Removal**: Remove highly correlated features (>0.9-0.95 threshold)
 - **Variance Threshold**: Remove near-zero variance features (<0.001)
 - **Missing Value Threshold**: Remove features with >50% missing values
-- **XGBoost Feature Importance**: Keep top 50-60% most important features
-- *Goal: Clean, focused feature set optimized for XGBoost performance through systematic reduction*
+- **Stability-Based Selection**: For each target, run repeated 80/20 random splits and compute permutation importance on the holdout; in each run keep the smallest set reaching 90% cumulative importance (min 25, max 120). Compute feature stability (share of runs selected) per target. Final feature set is the UNION of features with stability ≥ threshold (e.g., 0.6) for ANY target. Save both full list and a variant without regime-proxy features for later comparison.
+- *Goal: Robust, multi-target-aware selection without arbitrary cutoffs*
 
 ### **Phase 3: Temporal Validation Strategy**
 
@@ -70,7 +70,7 @@
 - **Phase 2 - Two-Stage Cascade Model**: High-risk Gate (2/3 vs 0/1) + Specialist (2 vs 3) with calibrated thresholds
 - **Use Optimized Features**: From Step 4 results
 - **Use Rolling Window CV**: From Step 5 for temporal robustness
-- **Use Best Imbalance Handling**: Apply Step 6 techniques (class-balanced weights, calibration, thresholds) consistently
+- **Ordinal Alternative**: From Step 6
 - **Evaluation Metrics**: High-risk Recall (primary), F1-macro, Balanced Accuracy, Cohen's Kappa, High-risk PR-AUC, ECE, Stability (mean F1 − std F1)
 - **Sparse Targets Handling**: Adapt window size/folds for very sparse targets to ensure valid folds
 - **Efficient Training**: Reuse results from previous phases to avoid duplicate training

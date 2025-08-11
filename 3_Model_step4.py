@@ -2,17 +2,18 @@
 XGBoost Risk Prediction Model - Step 4: Feature Refinement and Selection
 =======================================================================
 
-Step 4 Implementation - SIMPLIFIED 4-STEP APPROACH:
+Step 4 Implementation - SIMPLE, DATA-DRIVEN APPROACH:
 1. Correlation analysis (>0.9 threshold, configurable)
 2. Variance threshold (remove <0.001 variance, configurable)
 3. Missing value patterns (remove >50% missing, configurable)
-4. XGBoost feature importance (keep top 50-60%, configurable)
+4. XGBoost importance ranking + top-% grid [20, 40, 60, 80, 100] on a single 80/20 holdout
 
 Design Focus:
 - Clean, simple implementation
 - Essential reduction steps only
 - Preserve exclude columns and dataset creation
 - Generate comparison visualizations (diagnostics only)
+- RandomForest removed; XGBoost only
 """
 
 import pandas as pd
@@ -22,8 +23,8 @@ import json
 import os
 from datetime import datetime
 from sklearn.feature_selection import VarianceThreshold
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.font_manager as fm
@@ -201,70 +202,130 @@ def step3_remove_high_missing(X, threshold=0.5):
     
     return X_reduced
 
+def _get_step1_xgb_params() -> dict:
+    """Return XGBoost params aligned with Step 1 baseline (classification)."""
+    return {
+        'objective': 'multi:softprob',
+        'num_class': 4,
+        'n_estimators': 100,
+        'max_depth': 6,
+        'learning_rate': 0.1,
+        'eval_metric': 'mlogloss',
+        'enable_missing': True,
+        'random_state': 42,
+        'verbosity': 0,
+        'n_jobs': -1,
+    }
+
 def step4_xgboost_importance(X, y, keep_percentage=60):
-    """Step 4: XGBoost feature importance selection"""
-    print(f"\n📊 Step 4: XGBoost Feature Importance (keep top {keep_percentage}%)")
-    print("-" * 40)
-    
-    initial_features = len(X.columns)
-    
-    # Use first target for feature selection
-    y_single = y.iloc[:, 0] if len(y.shape) > 1 else y
-    
-    # Remove NaN targets and get numeric features
-    mask = ~pd.isna(y_single)
-    X_clean = X[mask]
-    y_clean = y_single[mask]
-    
-    # Get only numeric features for XGBoost
-    numeric_cols = X_clean.select_dtypes(include=[np.number]).columns
-    non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns
-    
+    """Step 4: XGBoost feature importance selection via top-% grid on a single holdout."""
+    return step4_xgboost_top_percent_grid(X, y, candidate_percents=[20, 40, 60, 80, 100])
+
+def step4_xgboost_top_percent_grid(X, y, candidate_percents=None):
+    """Evaluate top-% grid across all available risk targets (1~4) using a single stratified holdout per target.
+
+    - For each target: rank features by XGBoost importance on the train split and evaluate F1 on the holdout
+    - Aggregate F1 across targets per percent and choose the best average
+    - Build the final feature set from the average importance across targets using the chosen percent
+    """
+    if candidate_percents is None:
+        candidate_percents = [20, 40, 60, 80, 100]
+
+    print(f"\n📊 Step 4: XGBoost Feature Importance - top-% grid {candidate_percents} across risk_year1..4")
+    print("-" * 60)
+
+    # Determine targets
+    target_cols = []
+    if isinstance(y, pd.DataFrame):
+        target_cols = [c for c in y.columns if c.startswith('risk_year')]
+    else:
+        target_cols = ['risk_year1']
+
+    # Use all numeric columns post steps 1-3
+    numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
     if len(numeric_cols) == 0:
         print("⚠️ No numeric features for XGBoost importance")
         return X
-    
-    X_numeric = X_clean[numeric_cols].fillna(0)
-    
-    try:
-        # Train XGBoost (diagnostic importance model)
-        model = xgb.XGBClassifier(
-            n_estimators=50,
-            random_state=42,
-            verbosity=0,
-            n_jobs=-1,
-            tree_method='hist',
-            eval_metric='mlogloss'
-        )
-        model.fit(X_numeric, y_clean)
-        
-        # Get feature importance
-        importance_scores = model.feature_importances_
-        importance_df = pd.DataFrame({
-            'feature': X_numeric.columns,
-            'importance': importance_scores
-        }).sort_values('importance', ascending=False)
-        
-        # Select top percentage
-        n_features = max(int(len(numeric_cols) * keep_percentage / 100), 5)
-        selected_numeric = importance_df.head(n_features)['feature'].tolist()
-        
-        # Combine selected numeric + all non-numeric (diagnostics only; do not train with non-numerics)
-        final_cols = selected_numeric + list(non_numeric_cols)
-        X_reduced = X[final_cols]
-        
-        removed_count = len(numeric_cols) - len(selected_numeric)
-        print(f"✅ Kept top {len(selected_numeric)} numeric + {len(non_numeric_cols)} non-numeric features")
-        print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
-        
-        return X_reduced
-        
-    except Exception as e:
-        print(f"⚠️ XGBoost importance failed: {e}")
+
+    xgb_params = _get_step1_xgb_params()
+    n_numeric = len(numeric_cols)
+    aggregated_importances = np.zeros(n_numeric, dtype=float)
+    f1_per_percent: dict[int, list] = {pct: [] for pct in candidate_percents}
+    valid_targets = 0
+
+    for tcol in target_cols:
+        y_series = y[tcol] if isinstance(y, pd.DataFrame) else y
+        mask = ~pd.isna(y_series)
+        X_t = X.loc[mask, numeric_cols]
+        y_t = y_series.loc[mask]
+        # Need at least 2 classes
+        unique_classes = pd.Series(y_t).dropna().unique()
+        if len(unique_classes) < 2 or len(X_t) < 50:
+            continue
+
+        # Stratified split
+        idx_train, idx_val = train_test_split(X_t.index, test_size=0.2, random_state=42, shuffle=True, stratify=y_t)
+        X_train, X_val = X_t.loc[idx_train], X_t.loc[idx_val]
+        y_train, y_val = y_t.loc[idx_train].astype(int), y_t.loc[idx_val].astype(int)
+
+        # Rank on train
+        rank_model = xgb.XGBClassifier(**xgb_params)
+        rank_model.fit(X_train, y_train)
+        try:
+            importances = rank_model.feature_importances_
+            if importances is None or len(importances) != n_numeric:
+                raise ValueError("invalid importances")
+        except Exception:
+            booster = rank_model.get_booster()
+            score_dict = booster.get_score(importance_type='gain')
+            importances = np.array([score_dict.get(f'f{i}', 0.0) for i in range(n_numeric)], dtype=float)
+            if importances.sum() == 0:
+                importances = np.ones_like(importances)
+
+        # Aggregate importances across targets (feature_importances_ are normalized by XGBoost)
+        aggregated_importances += importances
+
+        # Build per-target ranking for evaluation
+        importance_df = pd.DataFrame({'feature': numeric_cols, 'importance': importances}).sort_values('importance', ascending=False)
+
+        # Evaluate candidate percents for this target
+        for pct in candidate_percents:
+            k = max(1, int(n_numeric * pct / 100))
+            selected = importance_df.head(k)['feature'].tolist()
+            model = xgb.XGBClassifier(**xgb_params)
+            model.fit(X_train[selected], y_train)
+            pred = model.predict(X_val[selected])
+            f1 = f1_score(y_val, pred, average='macro', zero_division=0)
+            f1_per_percent[pct].append(float(f1))
+
+        valid_targets += 1
+
+    if valid_targets == 0:
+        print("⚠️ No valid targets for selection; skipping.")
         return X
 
+    # Choose percent with highest average F1 across targets; tie breaks on smaller percent
+    avg_f1 = {pct: (float(np.mean(scores)) if len(scores) > 0 else 0.0) for pct, scores in f1_per_percent.items()}
+    best_percent = sorted(candidate_percents, key=lambda p: (-avg_f1.get(p, 0.0), p))[0]
+    best_k = max(1, int(n_numeric * best_percent / 100))
+
+    # Final selection by average importances across targets
+    avg_importance_df = pd.DataFrame({'feature': numeric_cols, 'importance': aggregated_importances / valid_targets})
+    avg_importance_df = avg_importance_df.sort_values('importance', ascending=False)
+    selected_numeric = avg_importance_df.head(best_k)['feature'].tolist()
+
+    final_cols = selected_numeric + non_numeric_cols
+    X_reduced = X[final_cols]
+
+    print("   Average F1 by percent:")
+    for pct in candidate_percents:
+        print(f"     - {pct:>3}%: {avg_f1.get(pct, 0.0):.4f} (from {len(f1_per_percent[pct])} targets)")
+    print(f"✅ Selected top-{best_percent}% features (k={best_k}) averaged across {valid_targets} targets")
+    return X_reduced
+
 def create_visualizations(X_original, X_reduced, y, results_dir):
-    """Create before/after comparison visualizations with proper train/test split"""
+    """Create before/after comparison visualizations with proper train/test split (XGBoost only)."""
     print(f"\n📊 Creating Comparison Visualizations (Proper Validation)")
     print("-" * 50)
     
@@ -312,27 +373,9 @@ def create_visualizations(X_original, X_reduced, y, results_dir):
         print(f"   • Training samples: {len(X_orig_train):,}")
         print(f"   • Test samples: {len(X_orig_test):,}")
         
-        # Train both RandomForest and XGBoost models for comparison
-        print(f"   🎯 Training RandomForest models...")
-        rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-        
-        # RandomForest - Original model
-        rf_orig = rf_model.fit(X_orig_train, y_train)
-        y_pred_rf_orig = rf_orig.predict(X_orig_test)
-        
-        # RandomForest - Reduced model  
-        rf_red = rf_model.fit(X_red_train, y_train)
-        y_pred_rf_red = rf_red.predict(X_red_test)
-        
+        # Train XGBoost models (aligned with Step 1)
         print(f"   🎯 Training XGBoost models...")
-        xgb_model = xgb.XGBClassifier(
-            n_estimators=100,
-            random_state=42,
-            verbosity=0,
-            n_jobs=-1,
-            tree_method='hist',
-            eval_metric='mlogloss'
-        )
+        xgb_model = xgb.XGBClassifier(**_get_step1_xgb_params())
         
         # XGBoost - Original model
         xgb_orig = xgb_model.fit(X_orig_train, y_train)
@@ -342,12 +385,10 @@ def create_visualizations(X_original, X_reduced, y, results_dir):
         xgb_red = xgb_model.fit(X_red_train, y_train)
         y_pred_xgb_red = xgb_red.predict(X_red_test)
         
-        # Create performance comparison for both models
-        create_performance_comparison(y_test, y_pred_rf_orig, y_pred_rf_red, 
-                                    y_pred_xgb_orig, y_pred_xgb_red,
-                                    X_original, X_reduced, results_dir)
-        
-        # Create confusion matrix comparison for XGBoost (since it's the main model)
+        # Create performance comparison for XGBoost only
+        create_performance_comparison(y_test, y_pred_xgb_orig, y_pred_xgb_red, X_original, X_reduced, results_dir)
+
+        # Create confusion matrix comparison for XGBoost
         create_confusion_matrix_comparison(y_test, y_pred_xgb_orig, y_pred_xgb_red, results_dir)
         
         print("✅ Visualizations created successfully with proper validation")
@@ -357,25 +398,9 @@ def create_visualizations(X_original, X_reduced, y, results_dir):
         import traceback
         traceback.print_exc()
 
-def create_performance_comparison(y_true, y_pred_rf_orig, y_pred_rf_red, 
-                                y_pred_xgb_orig, y_pred_xgb_red, X_orig, X_red, results_dir):
-    """Create performance metrics comparison chart with proper validation for both RF and XGBoost"""
-    
-    # Calculate metrics for RandomForest
-    metrics_rf_orig = {
-        'Accuracy': accuracy_score(y_true, y_pred_rf_orig),
-        'F1-Score': f1_score(y_true, y_pred_rf_orig, average='macro', zero_division=0),
-        'Precision': precision_score(y_true, y_pred_rf_orig, average='macro', zero_division=0),
-        'Recall': recall_score(y_true, y_pred_rf_orig, average='macro', zero_division=0)
-    }
-    
-    metrics_rf_red = {
-        'Accuracy': accuracy_score(y_true, y_pred_rf_red),
-        'F1-Score': f1_score(y_true, y_pred_rf_red, average='macro', zero_division=0),
-        'Precision': precision_score(y_true, y_pred_rf_red, average='macro', zero_division=0),
-        'Recall': recall_score(y_true, y_pred_rf_red, average='macro', zero_division=0)
-    }
-    
+def create_performance_comparison(y_true, y_pred_xgb_orig, y_pred_xgb_red, X_orig, X_red, results_dir):
+    """Create performance metrics comparison chart for XGBoost only."""
+
     # Calculate metrics for XGBoost
     metrics_xgb_orig = {
         'Accuracy': accuracy_score(y_true, y_pred_xgb_orig),
@@ -394,48 +419,40 @@ def create_performance_comparison(y_true, y_pred_rf_orig, y_pred_rf_red,
     # Print validation results
     print(f"\n📊 VALIDATION RESULTS (80/20 Train/Test Split):")
     print("-" * 60)
-    print(f"   🎯 RandomForest F1-Score (Macro):")
-    print(f"      • Before Step4: {metrics_rf_orig['F1-Score']:.4f}")
-    print(f"      • After Step4:  {metrics_rf_red['F1-Score']:.4f}")
-    print(f"      • Difference:   {metrics_rf_red['F1-Score'] - metrics_rf_orig['F1-Score']:+.4f}")
     print(f"   🎯 XGBoost F1-Score (Macro):")
     print(f"      • Before Step4: {metrics_xgb_orig['F1-Score']:.4f}")
     print(f"      • After Step4:  {metrics_xgb_red['F1-Score']:.4f}")
     print(f"      • Difference:   {metrics_xgb_red['F1-Score'] - metrics_xgb_orig['F1-Score']:+.4f}")
-    print(f"   📈 RandomForest Accuracy:")
-    print(f"      • Before Step4: {metrics_rf_orig['Accuracy']:.4f}")
-    print(f"      • After Step4:  {metrics_rf_red['Accuracy']:.4f}")
-    print(f"      • Difference:   {metrics_rf_red['Accuracy'] - metrics_rf_orig['Accuracy']:+.4f}")
     print(f"   📈 XGBoost Accuracy:")
     print(f"      • Before Step4: {metrics_xgb_orig['Accuracy']:.4f}")
     print(f"      • After Step4:  {metrics_xgb_red['Accuracy']:.4f}")
     print(f"      • Difference:   {metrics_xgb_red['Accuracy'] - metrics_xgb_orig['Accuracy']:+.4f}")
     
-    # Create comparison plot with 4 subplots
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Step 4 Feature Reduction Impact - Model Comparison', fontsize=16, fontweight='bold')
-    
-    # 1. RandomForest Performance Metrics
-    metrics_names = list(metrics_rf_orig.keys())
-    rf_orig_values = list(metrics_rf_orig.values())
-    rf_red_values = list(metrics_rf_red.values())
-    
+    # Create comparison plot with 2 subplots (metrics + feature counts)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    fig.suptitle('Step 4 Feature Reduction Impact - XGBoost', fontsize=16, fontweight='bold')
+
+    # 1. XGBoost Performance Metrics
+    metrics_names = list(metrics_xgb_orig.keys())
+    xgb_orig_values = list(metrics_xgb_orig.values())
+    xgb_red_values = list(metrics_xgb_red.values())
+
     x_pos = np.arange(len(metrics_names))
     width = 0.35
-    
-    bars1 = ax1.bar(x_pos - width/2, rf_orig_values, width, 
-                    label=f'Before Step4 ({X_orig.shape[1]} features)', alpha=0.8, color='lightcoral')
-    bars2 = ax1.bar(x_pos + width/2, rf_red_values, width, 
-                    label=f'After Step4 ({X_red.shape[1]} features)', alpha=0.8, color='lightblue')
-    
+
+    bars1 = ax1.bar(x_pos - width/2, xgb_orig_values, width, 
+                    label=f'Before Step4 ({X_orig.shape[1]} features)', alpha=0.8, color='salmon')
+    bars2 = ax1.bar(x_pos + width/2, xgb_red_values, width, 
+                    label=f'After Step4 ({X_red.shape[1]} features)', alpha=0.8, color='skyblue')
+
     ax1.set_xlabel('Metrics')
     ax1.set_ylabel('Score')
-    ax1.set_title('RandomForest Performance Comparison')
+    ax1.set_title('XGBoost Performance Comparison')
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(metrics_names)
     ax1.legend()
     ax1.grid(True, alpha=0.3)
-    
+
     # Add value labels on bars
     for bar in bars1:
         height = bar.get_height()
@@ -445,86 +462,28 @@ def create_performance_comparison(y_true, y_pred_rf_orig, y_pred_rf_red,
         height = bar.get_height()
         ax1.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
                     xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
-    
-    # 2. XGBoost Performance Metrics
-    xgb_orig_values = list(metrics_xgb_orig.values())
-    xgb_red_values = list(metrics_xgb_red.values())
-    
-    bars3 = ax2.bar(x_pos - width/2, xgb_orig_values, width, 
-                    label=f'Before Step4 ({X_orig.shape[1]} features)', alpha=0.8, color='salmon')
-    bars4 = ax2.bar(x_pos + width/2, xgb_red_values, width, 
-                    label=f'After Step4 ({X_red.shape[1]} features)', alpha=0.8, color='skyblue')
-    
-    ax2.set_xlabel('Metrics')
-    ax2.set_ylabel('Score')
-    ax2.set_title('XGBoost Performance Comparison')
-    ax2.set_xticks(x_pos)
-    ax2.set_xticklabels(metrics_names)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    # Add value labels on bars
-    for bar in bars3:
-        height = bar.get_height()
-        ax2.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
-                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
-    for bar in bars4:
-        height = bar.get_height()
-        ax2.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
-                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
-    
-    # 3. Feature Count Comparison
+
+    # 2. Feature Count Comparison
     feature_counts = ['Before Step4', 'After Step4']
     counts = [X_orig.shape[1], X_red.shape[1]]
     colors = ['lightcoral', 'lightblue']
-    
-    bars = ax3.bar(feature_counts, counts, color=colors, alpha=0.8)
-    ax3.set_ylabel('Number of Features')
-    ax3.set_title('Feature Count Comparison')
-    ax3.grid(True, alpha=0.3)
-    
+
+    bars = ax2.bar(feature_counts, counts, color=colors, alpha=0.8)
+    ax2.set_ylabel('Number of Features')
+    ax2.set_title('Feature Count Comparison')
+    ax2.grid(True, alpha=0.3)
+
     # Add percentage reduction
     reduction_pct = (1 - X_red.shape[1] / X_orig.shape[1]) * 100
-    ax3.text(0.5, max(counts) * 0.8, f'Reduction: {reduction_pct:.1f}%', 
+    ax2.text(0.5, max(counts) * 0.8, f'Reduction: {reduction_pct:.1f}%', 
             ha='center', fontsize=12, fontweight='bold')
-    
+
     # Add value labels on bars
     for bar in bars:
         height = bar.get_height()
-        ax3.annotate(f'{int(height)}', xy=(bar.get_x() + bar.get_width()/2, height),
+        ax2.annotate(f'{int(height)}', xy=(bar.get_x() + bar.get_width()/2, height),
                     xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
-    
-    # 4. F1-Score Comparison Summary
-    models = ['RandomForest', 'XGBoost']
-    before_f1 = [metrics_rf_orig['F1-Score'], metrics_xgb_orig['F1-Score']]
-    after_f1 = [metrics_rf_red['F1-Score'], metrics_xgb_red['F1-Score']]
-    
-    x_pos = np.arange(len(models))
-    width = 0.35
-    
-    bars5 = ax4.bar(x_pos - width/2, before_f1, width, 
-                    label='Before Step4', alpha=0.8, color='lightcoral')
-    bars6 = ax4.bar(x_pos + width/2, after_f1, width, 
-                    label='After Step4', alpha=0.8, color='lightblue')
-    
-    ax4.set_xlabel('Models')
-    ax4.set_ylabel('F1-Score (Macro)')
-    ax4.set_title('F1-Score Comparison Summary')
-    ax4.set_xticks(x_pos)
-    ax4.set_xticklabels(models)
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
-    
-    # Add value labels on bars
-    for bar in bars5:
-        height = bar.get_height()
-        ax4.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
-                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
-    for bar in bars6:
-        height = bar.get_height()
-        ax4.annotate(f'{height:.3f}', xy=(bar.get_x() + bar.get_width()/2, height),
-                    xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
-    
+
     plt.tight_layout()
     plt.savefig(f'{results_dir}/step4_performance_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
@@ -583,12 +542,12 @@ def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_
     # Save summary
     summary = {
         'execution_date': datetime.now().isoformat(),
-        'approach': '5_step_simplified_reduction',
+        'approach': 'top_percent_grid_holdout',
         'steps': [
             '1. Correlation analysis (>0.9)',
             '2. Variance threshold (<0.001)', 
             '3. Missing values (>50%)',
-            '4. XGBoost importance (top 60%)'
+            '4. XGBoost importance top-% grid [20,40,60,80,100] (holdout)'
         ],
         'final_feature_count': len(X_reduced.columns),
         'dataset_composition': {
