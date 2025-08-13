@@ -914,12 +914,12 @@ def get_example_config():
         'base_table_path': 'dataset/청약.csv',
         'risk_table_path': 'dataset/조기경보이력_리스크단계.csv',
         'x_variable_paths': {
-            'financial': 'dataset/KED재무DATA.csv',
+            'financial': 'dataset/KED가공재무DATA.csv',
             'trade': 'dataset/무역통계진흥원수출실적.csv',
             'grade': 'dataset/KED종합신용정보.csv', 
             'gdp': 'dataset/gdp_data.csv',
             'index_trade': 'dataset/trade_data.csv',
-            'index_industry': 'dataset/업종코드.csv',
+            'index_industry': 'dataset/업종코드_수출자.csv',
             'index_exchange': 'dataset/exchange_rate_data.csv',
         },
         

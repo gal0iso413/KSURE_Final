@@ -15,6 +15,8 @@ Design Focus:
 - Multi-target analysis (risk_year1, risk_year2, risk_year3, risk_year4)
 - Unified validation strategy selection for all targets
 - Clear distinction between temporal and non-temporal approaches
+\n+Metric Focus:
+- Report F1-Score (Macro) and High-Risk Recall (classes >= 2) instead of Accuracy
 """
 
 import pandas as pd
@@ -24,7 +26,7 @@ import json
 import os
 from datetime import datetime
 from sklearn.model_selection import TimeSeriesSplit, train_test_split
-from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, confusion_matrix
+from sklearn.metrics import f1_score, precision_score, recall_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.font_manager as fm
@@ -64,6 +66,17 @@ def setup_korean_font():
 setup_korean_font()
 plt.style.use('default')
 sns.set_palette("husl")
+
+def calculate_high_risk_recall(y_true, y_pred):
+    """Compute high-risk recall for classes >= 2 (medium/high risk)."""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    unique_classes = np.unique(y_true)
+    if len(unique_classes) > 2:
+        high_risk_mask = y_true >= 2
+        if np.sum(high_risk_mask) > 0:
+            return recall_score(y_true[high_risk_mask], y_pred[high_risk_mask], average='macro', zero_division=0)
+    return 0.0
 
 def load_and_prepare_step4_data():
     """Load and prepare Step 4 data with proper temporal sorting"""
@@ -154,13 +167,12 @@ def approach1_random_split(X, y, test_size=0.2):
     # Calculate metrics
     metrics = {
         'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
-        'accuracy': accuracy_score(y_test, y_pred),
-        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
-        'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+        'high_risk_recall': calculate_high_risk_recall(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0)
     }
     
     print(f"   🎯 F1-Score (Macro): {metrics['f1_macro']:.4f}")
-    print(f"   📈 Accuracy: {metrics['accuracy']:.4f}")
+    print(f"   🔥 High-Risk Recall: {metrics['high_risk_recall']:.4f}")
     
     return {
         'approach': 'Random Split',
@@ -222,13 +234,12 @@ def approach2_stratified_random_split(X, y, test_size=0.2):
     # Calculate metrics
     metrics = {
         'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
-        'accuracy': accuracy_score(y_test, y_pred),
-        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
-        'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+        'high_risk_recall': calculate_high_risk_recall(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0)
     }
     
     print(f"   🎯 F1-Score (Macro): {metrics['f1_macro']:.4f}")
-    print(f"   📈 Accuracy: {metrics['accuracy']:.4f}")
+    print(f"   🔥 High-Risk Recall: {metrics['high_risk_recall']:.4f}")
     
     return {
         'approach': 'Stratified Random Split',
@@ -284,13 +295,12 @@ def approach3_temporal_holdout(X, y, test_size=0.2):
     # Calculate metrics
     metrics = {
         'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
-        'accuracy': accuracy_score(y_test, y_pred),
-        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
-        'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+        'high_risk_recall': calculate_high_risk_recall(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred, average='macro', zero_division=0)
     }
 
     print(f"   🎯 F1-Score (Macro): {metrics['f1_macro']:.4f}")
-    print(f"   📈 Accuracy: {metrics['accuracy']:.4f}")
+    print(f"   🔥 High-Risk Recall: {metrics['high_risk_recall']:.4f}")
 
     return {
         'approach': 'Simple Temporal Holdout',
@@ -352,9 +362,8 @@ def approach4_expanding_window_cv(X, y, n_splits=5):
         # Calculate metrics
         metrics = {
             'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
-            'accuracy': accuracy_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
-            'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+            'high_risk_recall': calculate_high_risk_recall(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, average='macro', zero_division=0)
         }
         metrics_list.append(metrics)
         
@@ -366,7 +375,7 @@ def approach4_expanding_window_cv(X, y, n_splits=5):
         avg_metrics[key] = np.mean([m[key] for m in metrics_list])
     
     print(f"   🎯 Average F1-Score (Macro): {avg_metrics['f1_macro']:.4f}")
-    print(f"   📈 Average Accuracy: {avg_metrics['accuracy']:.4f}")
+    print(f"   🔥 Average High-Risk Recall: {avg_metrics['high_risk_recall']:.4f}")
     
     return {
         'approach': 'Expanding Window CV',
@@ -444,9 +453,8 @@ def approach5_rolling_window_cv(X, y, window_size=0.6, n_splits=5):
         # Calculate metrics
         metrics = {
             'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
-            'accuracy': accuracy_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred, average='macro', zero_division=0),
-            'recall': recall_score(y_test, y_pred, average='macro', zero_division=0)
+            'high_risk_recall': calculate_high_risk_recall(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, average='macro', zero_division=0)
         }
         metrics_list.append(metrics)
         
@@ -462,7 +470,7 @@ def approach5_rolling_window_cv(X, y, window_size=0.6, n_splits=5):
         avg_metrics[key] = np.mean([m[key] for m in metrics_list])
     
     print(f"   🎯 Average F1-Score (Macro): {avg_metrics['f1_macro']:.4f}")
-    print(f"   📈 Average Accuracy: {avg_metrics['accuracy']:.4f}")
+    print(f"   🔥 Average High-Risk Recall: {avg_metrics['high_risk_recall']:.4f}")
     
     return {
         'approach': 'Rolling Window CV',

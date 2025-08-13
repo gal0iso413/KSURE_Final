@@ -591,8 +591,7 @@ def create_comprehensive_visualizations(all_results, results_dir):
                 y_pred = results[best_m]['all_predictions']
                 if len(y_true) > 0 and len(y_pred) > 0:
                     cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3])
-                    cm_normalized = cm.astype('float') / np.maximum(cm.sum(axis=1)[:, np.newaxis], 1)
-                    sns.heatmap(cm_normalized, annot=True, fmt='.3f', cmap='Blues', ax=ax)
+                    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
                     ax.set_title(f'{target} - {best_m}', fontsize=12)
                     ax.set_xlabel('Predicted', fontsize=10)
                     ax.set_ylabel('Actual', fontsize=10)
