@@ -45,6 +45,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
+import subprocess
+import sys
 
 
 # -----------------------------------------------------------------------------
@@ -64,6 +66,10 @@ class Step9Config:
     date_column: str = "보험청약일자"
     key_column: str = "청약번호"
     random_state: int = 42
+    # Optional: run grading after predictions
+    run_grade: bool = False
+    grade_script: str = "4_Grade.py"
+    grade_output_dir: str = "result/step9_grading"
 
 
 # -----------------------------------------------------------------------------
@@ -303,6 +309,9 @@ def main():
     parser.add_argument("--date_column", type=str, default="보험청약일자")
     parser.add_argument("--key_column", type=str, default="청약번호")
     parser.add_argument("--random_state", type=int, default=42)
+    parser.add_argument("--run_grade", action="store_true")
+    parser.add_argument("--grade_script", type=str, default="4_Grade.py")
+    parser.add_argument("--grade_output_dir", type=str, default="result/step9_grading")
     args = parser.parse_args()
 
     cfg = Step9Config(
@@ -316,6 +325,9 @@ def main():
         date_column=args.date_column,
         key_column=args.key_column,
         random_state=int(args.random_state),
+        run_grade=bool(args.run_grade),
+        grade_script=args.grade_script,
+        grade_output_dir=args.grade_output_dir,
     )
 
     ensure_dir(os.path.dirname(cfg.predictions_path))
@@ -600,6 +612,22 @@ def main():
     model_manifest["metrics_oot"] = metrics_summary
     with open(os.path.join(cfg.output_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(model_manifest, f, indent=2, ensure_ascii=False)
+
+    # Optional: run grading step automatically
+    if cfg.run_grade:
+        try:
+            cmd = [
+                sys.executable,
+                cfg.grade_script,
+                "--dataset_path", cfg.dataset_path,
+                "--predictions_path", cfg.predictions_path,
+                "--output_dir", cfg.grade_output_dir,
+            ]
+            print(f"▶ Running grading: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            print(f"✅ Grading completed. Outputs in: {cfg.grade_output_dir}")
+        except Exception as e:
+            print(f"⚠️ Grading step failed: {e}")
 
     print(f"✅ Step 9 completed. Predictions saved to: {cfg.predictions_path}")
     print(f"   Quick report: {os.path.join(cfg.output_dir, 'quick_report.md')}")
