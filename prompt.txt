@@ -81,7 +81,7 @@
 - Define search space based on selected architecture (Step 7)
 - Use selected temporal validation strategy (Step 5)
 - Optimize for high-risk recall
-- **Use Unified model**: From Step 7 results
+- **Use Individual model**: From Step 7 results
 - **Use Optimized Features**: From Step 4 results
 - **Use Rolling Window CV**: From Step 5 results
 - **Use Ordinal cumulative**: From Step 6 results

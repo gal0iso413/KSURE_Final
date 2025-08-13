@@ -1,25 +1,27 @@
 """
-XGBoost Risk Prediction Model - Step 8: Hyperparameter Tuning (Unified Multiclass)
-==============================================================================
+XGBoost Risk Prediction Model - Step 8: Hyperparameter Tuning (Individual Per-Target Multiclass)
+===============================================================================================
 
-Objective, efficient, and explainable tuning for the unified multiclass model
-(selected in Step 7 Phase 1), using rolling-window CV with per-target matured folds
-and Step 6 imbalance handling (class-balanced sample weights; argmax decision).
+Objective, efficient, and explainable tuning for the individual per-target
+multiclass models (selected in Step 7 Phase 1), using rolling-window CV with
+per-target matured folds and Step 6 imbalance handling (class-balanced sample
+weights; argmax decision).
 
 Primary objective:
-- Maximize mean High-Risk Recall (classes 2-3) across all targets and folds.
+- Maximize mean macro F1 across all folds per target.
 
 Notes:
 - Rolling-window fold generation mirrors Step 5.
-- Evaluation matches Step 7 unified evaluation style: train a single unified model
-  (with `task_id`) per fold and evaluate per-target on that target's test split.
+- Evaluation matches Step 7 individual evaluation style: for each target, train
+  a separate model per fold using that target's training split and evaluate on
+  that target's test split.
 - No cascades, no calibration, no prior correction, no ordinal in tuning.
 """
 
 import os
 import json
 from datetime import datetime
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -29,7 +31,7 @@ import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
 
-from sklearn.metrics import f1_score, recall_score
+from sklearn.metrics import f1_score
 from sklearn.utils.class_weight import compute_sample_weight
 
 import warnings
@@ -48,7 +50,7 @@ RESULTS_DIR = 'result/step8_optuna'
 DATASET_PATH = 'dataset/credit_risk_dataset_step4.csv'
 
 # -----------------------------------------------------------------------------
-# Utilities (aligned with Steps 5-7)
+# Utilities (shared with previous steps)
 # -----------------------------------------------------------------------------
 
 def load_step4_data():
@@ -84,27 +86,12 @@ def generate_rolling_window_indices(X: pd.DataFrame, window_size: float = WINDOW
         indices.append((list(range(start, end)), list(range(test_start, test_end))))
     return indices
 
+
 def compute_sample_weights_balanced(y: np.ndarray) -> np.ndarray:
     return compute_sample_weight('balanced', y)
 
 
-def stack_multitask_training_data(X_train: pd.DataFrame, y_train_df: pd.DataFrame, target_cols) -> Tuple[pd.DataFrame, np.ndarray]:
-    frames = []
-    labels = []
-    for task_id, target_name in enumerate(target_cols):
-        y_t = y_train_df[target_name]
-        mask = ~pd.isna(y_t)
-        if mask.sum() == 0:
-            continue
-        X_t = X_train.loc[mask].copy()
-        X_t['task_id'] = task_id
-        frames.append(X_t)
-        labels.append(y_t.loc[mask].astype(int).values)
-    if not frames:
-        return None, None
-    X_stacked = pd.concat(frames, axis=0).reset_index(drop=True)
-    y_stacked = np.concatenate(labels, axis=0)
-    return X_stacked, y_stacked
+# Removed calibration and prior-correction utilities for Step 8 (not used)
 
 
 def generate_target_folds_original_indices(X: pd.DataFrame, y_target: pd.Series,
@@ -126,7 +113,7 @@ def generate_target_folds_original_indices(X: pd.DataFrame, y_target: pd.Series,
 
 
 # -----------------------------------------------------------------------------
-# Optuna objective (Unified Multiclass)
+# Optuna objectives (Individual Per-Target Multiclass)
 # -----------------------------------------------------------------------------
 
 def suggest_xgb_params(trial: optuna.Trial) -> Dict[str, Any]:
@@ -144,77 +131,66 @@ def suggest_xgb_params(trial: optuna.Trial) -> Dict[str, Any]:
     }
     return params
 
-def objective_unified_multiclass(trial: optuna.Trial, X: pd.DataFrame, y: pd.DataFrame, target_cols, precomputed_folds: dict) -> float:
+
+def objective_individual_multiclass_for_target(trial: optuna.Trial, X: pd.DataFrame, y_target: pd.Series, indices) -> float:
     params = suggest_xgb_params(trial)
 
-    hr_recalls = []
     f1_macros = []
+    for (train_idx, test_idx) in indices:
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train_full, y_test_full = y_target.iloc[train_idx], y_target.iloc[test_idx]
 
-    # Evaluate unified model per target using that target's matured folds
-    for target_name in target_cols:
-        task_id = target_cols.index(target_name)
-        folds = precomputed_folds.get(target_name, [])
-        for train_idx, test_idx in folds:
-            # Train unified multiclass on full training indices (no early stopping)
-            X_train_fold = X.loc[train_idx]
-            y_train_df_fold = y.loc[train_idx]
-            X_stacked, y_stacked = stack_multitask_training_data(X_train_fold, y_train_df_fold[target_cols], target_cols)
-            if X_stacked is None or len(y_stacked) == 0:
-                continue
+        # Clean NaNs
+        train_mask = ~pd.isna(y_train_full)
+        test_mask = ~pd.isna(y_test_full)
+        X_train_clean = X_train[train_mask]
+        y_train_clean = y_train_full[train_mask].astype(int).values
+        X_test_clean = X_test[test_mask]
+        y_test_clean = y_test_full[test_mask].astype(int).values
+        if len(y_train_clean) == 0 or len(y_test_clean) == 0:
+            continue
 
-            sample_weights = compute_sample_weights_balanced(y_stacked)
-            model = xgb.XGBClassifier(
-                random_state=RANDOM_STATE,
-                n_jobs=-1,
-                tree_method='hist',
-                eval_metric='mlogloss',
-                **params,
-            )
-            model.fit(X_stacked, y_stacked, sample_weight=sample_weights)
+        sample_weights = compute_sample_weights_balanced(y_train_clean)
+        model = xgb.XGBClassifier(
+            random_state=RANDOM_STATE,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='mlogloss',
+            **params,
+        )
+        model.fit(X_train_clean, y_train_clean, sample_weight=sample_weights)
 
-            X_test = X.loc[test_idx].copy()
-            y_test = y[target_name].loc[test_idx].astype(int).values
-            X_test['task_id'] = task_id
+        proba_test = model.predict_proba(X_test_clean)
+        y_pred = np.argmax(proba_test, axis=1)
 
-            proba_test = model.predict_proba(X_test)
-            y_pred = np.argmax(proba_test, axis=1)
+        # Macro F1 across all classes
+        f1m = f1_score(y_test_clean, y_pred, average='macro', zero_division=0)
+        f1_macros.append(f1m)
 
-            # Metrics aligned with Step 7
-            unique_classes = np.unique(y_test)
-            if len(unique_classes) > 2:
-                mask = y_test >= 2
-                if mask.sum() > 0:
-                    hr = recall_score(y_test[mask], y_pred[mask], average='macro', zero_division=0)
-                else:
-                    hr = 0.0
-            else:
-                hr = 0.0
-            f1m = f1_score(y_test, y_pred, average='macro', zero_division=0)
+        # Early pruning hint
+        trial.report(np.mean(f1_macros), step=len(f1_macros))
+        if trial.should_prune():
+            raise optuna.TrialPruned()
 
-            hr_recalls.append(hr)
-            f1_macros.append(f1m)
-
-            # Early pruning hint
-            trial.report(np.mean(hr_recalls), step=len(hr_recalls))
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-
-    # Primary objective: mean HR-Recall
-    return float(np.mean(hr_recalls)) if hr_recalls else 0.0
+    return float(np.mean(f1_macros)) if f1_macros else 0.0
 
 
-def tune_unified_multiclass(X: pd.DataFrame, y: pd.DataFrame, target_cols, precomputed_folds: dict, n_trials: int = TRIALS):
+def tune_individual_multiclass_for_target(X: pd.DataFrame, y_target: pd.Series, indices, n_trials: int = TRIALS):
     study = optuna.create_study(
         sampler=TPESampler(seed=RANDOM_STATE),
         pruner=MedianPruner(n_warmup_steps=10),
         direction='maximize',
-        study_name='unified_multiclass_study'
+        study_name='individual_multiclass_study'
     )
-    study.optimize(lambda t: objective_unified_multiclass(t, X, y, target_cols, precomputed_folds), n_trials=n_trials, show_progress_bar=False)
+    study.optimize(lambda t: objective_individual_multiclass_for_target(t, X, y_target, indices), n_trials=n_trials, show_progress_bar=False)
     return study
 
 
-# No threshold computation is needed for multiclass argmax
+# -----------------------------------------------------------------------------
+# Tuning orchestrators
+# -----------------------------------------------------------------------------
+
+# Removed threshold computation; multiclass argmax is used for evaluation
 
 
 # -----------------------------------------------------------------------------
@@ -225,38 +201,56 @@ def main():
     os.makedirs(RESULTS_DIR, exist_ok=True)
     df, X, y, exclude_cols, target_cols = load_step4_data()
 
-    print("🚀 STEP 8: Hyperparameter Tuning with Optuna (Unified Multiclass)")
+    print("🚀 STEP 8: Hyperparameter Tuning with Optuna (Individual Per-Target Multiclass)")
     print("=" * 70)
     print(f"📊 Features: {X.shape[1]}")
     print(f"🎯 Targets: {target_cols}")
 
-    # Precompute per-target matured folds once for efficiency
-    precomputed_folds = {t: generate_target_folds_original_indices(X, y[t]) for t in target_cols}
+    all_results: Dict[str, Any] = {}
+    for target in target_cols:
+        print(f"\n🎯 TUNING TARGET: {target}")
+        indices = generate_target_folds_original_indices(X, y[target], window_size=WINDOW_SIZE, n_splits=N_SPLITS)
+        print(f"   Folds available: {len(indices)}")
+        study = tune_individual_multiclass_for_target(X, y[target], indices, n_trials=TRIALS)
+        best_params = study.best_params
+        best_score = study.best_value
+        print(f"   ✅ Best mean F1-Macro: {best_score:.4f}")
 
-    print("   🔧 Tuning unified multiclass model (class weights; argmax)…")
-    study = tune_unified_multiclass(X, y, target_cols, precomputed_folds, n_trials=TRIALS)
-    best_params = study.best_params
-    best_score = study.best_value
-    print(f"   ✅ Best mean HR-Recall: {best_score:.4f}")
+        all_results[target] = {
+            'best_params': best_params,
+            'best_score_mean_hr_recall': best_score,
+        }
 
     # Save results
     summary = {
         'execution_date': datetime.now().isoformat(),
-        'approach': 'optuna_tuning_unified_multiclass',
+        'approach': 'optuna_tuning_individual_multiclass',
         'window_size': WINDOW_SIZE,
         'n_splits': N_SPLITS,
         'trials': TRIALS,
-        'targets': target_cols,
-        'best_score_mean_hr_recall': best_score,
-        'best_params': best_params,
+        'targets_tuned': len(all_results),
+        'results': all_results,
     }
 
     with open(os.path.join(RESULTS_DIR, 'step8_optuna_summary.json'), 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
+    # Also save a compact best-params file for downstream steps
+    best_params_by_target = {t: info['best_params'] for t, info in all_results.items()}
+    compact = {
+        'execution_date': datetime.now().isoformat(),
+        'approach': 'individual_multiclass',
+        'targets': target_cols,
+        'best_params_by_target': best_params_by_target,
+        'best_score_metric': 'f1_macro',
+    }
+    with open(os.path.join(RESULTS_DIR, 'step8_best_params_individual.json'), 'w', encoding='utf-8') as f:
+        json.dump(compact, f, indent=2, ensure_ascii=False)
+
     print("\n🎉 STEP 8 TUNING COMPLETED!")
     print("=" * 70)
     print(f"✅ Results saved: {os.path.join(RESULTS_DIR, 'step8_optuna_summary.json')}")
+    print(f"✅ Best params saved: {os.path.join(RESULTS_DIR, 'step8_best_params_individual.json')}")
 
 
 if __name__ == '__main__':
