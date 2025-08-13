@@ -84,40 +84,19 @@
 - **Use Individual model**: From Step 7 results
 - **Use Optimized Features**: From Step 4 results
 - **Use Rolling Window CV**: From Step 5 results
-- **Use Ordinal cumulative**: From Step 6 results
+- **Algorithm-Level Reweighting**: From Step 6 results
 - *Goal: Find optimal model configuration*
 
-### **Phase 7: Analysis & Interpretation**
+### **Phase 7: Post-Step8 Bridge (Final Training, Prediction Export, Lean Interpretation)**
 
-**Step 9: Feature Importance & Interpretability**
-- Generate SHAP values for selected architecture
-- Provide business interpretations of feature importance
-- Analyze temporal feature importance patterns
-- **Use Final Model**: From Step 8 results
-- *Goal: Provide explainable predictions*
-
-**Step 10: Comprehensive Visualization**
-- Create business-focused visualizations
-- Temporal performance analysis
-- Risk prediction patterns over time
-- **Use Final Model**: From Step 8 results
-- *Goal: Generate actionable insights*
-
-### **Phase 8: Validation & Documentation**
-
-**Step 11: Model Validation & Testing**
-- Test across multiple periods using temporal CV
-- Validate business assumptions
-- Performance degradation analysis over time
-- **Use Final Model**: From Step 8 results
-- *Goal: Ensure production readiness*
-
-**Step 12: Final Documentation & Deployment Prep**
-- Document limitations and recommendations
-- Model deployment specifications
-- Monitoring and maintenance guidelines
-- **Use Final Model**: From Step 8 results
-- *Goal: Deliver production-ready model*
+**Step 9: Final Model Fit, Prediction Export, and Quick Interpretation**
+- **Load Step 8 best params**: Auto-detect architecture (individual vs unified) from `result/step8_optuna/*best_params*.json`; allow manual override.
+- **Train final model(s)**: Fit with class-balanced weights on all labeled rows per target (or unified with `task_id`). Persist artifacts to `result/step9_post/models/` with a manifest.
+- **Export probabilities for grading**: Predict for all rows and write `result/predictions/yearly_multiclass_proba.csv` with required columns: `청약번호`, optional `보험청약일자`, and `proba_y{1..4}_{0..3}`.
+- **Quick analysis (lean)**: OOT sanity check (last 20% by `보험청약일자`): macro F1, balanced accuracy, high-risk recall; gain-based top-20 features per target; optional small-sample SHAP cache.
+- **Outputs**: `result/predictions/yearly_multiclass_proba.csv`, `result/step9_post/quick_report.md`, `result/step9_post/feature_importance_*.csv`, `result/step9_post/models/*`, `result/step9_post/manifest.json`.
+- **Next**: Run `4_Grade.py` using the exported predictions, then `4_Verify.py`.
+- *Goal: Seamlessly bridge tuned params to grading with a fast, explainable handoff*
 
 ---
 
