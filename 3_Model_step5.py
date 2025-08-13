@@ -123,8 +123,8 @@ def approach1_random_split(X, y, test_size=0.2):
     X_clean = X[mask]
     y_clean = y_single[mask]
     
-    # Get numeric features
-    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    # Get numeric features (preserve NaNs for XGBoost's native missing handling)
+    X_numeric = X_clean.select_dtypes(include=[np.number])
     
     if len(X_numeric.columns) == 0:
         print("⚠️ No numeric features for validation")
@@ -185,8 +185,8 @@ def approach2_stratified_random_split(X, y, test_size=0.2):
     X_clean = X[mask]
     y_clean = y_single[mask]
     
-    # Get numeric features
-    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    # Get numeric features (preserve NaNs)
+    X_numeric = X_clean.select_dtypes(include=[np.number])
     
     if len(X_numeric.columns) == 0:
         print("⚠️ No numeric features for validation")
@@ -253,8 +253,8 @@ def approach3_temporal_holdout(X, y, test_size=0.2):
     X_clean = X[mask]
     y_clean = y_single[mask]
 
-    # Get numeric features
-    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    # Get numeric features (preserve NaNs)
+    X_numeric = X_clean.select_dtypes(include=[np.number])
 
     if len(X_numeric.columns) == 0:
         print("⚠️ No numeric features for validation")
@@ -301,9 +301,9 @@ def approach3_temporal_holdout(X, y, test_size=0.2):
         'features': X_train.shape[1]
     }
 
-def approach3_expanding_window_cv(X, y, n_splits=5):
-    """Approach 3: Expanding Window CV - Evaluates stability as more data accumulates"""
-    print(f"\n📊 Approach 3: Expanding Window CV (n_splits={n_splits})")
+def approach4_expanding_window_cv(X, y, n_splits=5):
+    """Approach 4: Expanding Window CV - Evaluates stability as more data accumulates"""
+    print(f"\n📊 Approach 4: Expanding Window CV (n_splits={n_splits})")
     print("-" * 60)
     print("🎯 Purpose: Evaluates stability as more data accumulates over time")
     
@@ -315,8 +315,8 @@ def approach3_expanding_window_cv(X, y, n_splits=5):
     X_clean = X[mask]
     y_clean = y_single[mask]
     
-    # Get numeric features
-    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    # Get numeric features (preserve NaNs)
+    X_numeric = X_clean.select_dtypes(include=[np.number])
     
     if len(X_numeric.columns) == 0:
         print("⚠️ No numeric features for validation")
@@ -378,9 +378,9 @@ def approach3_expanding_window_cv(X, y, n_splits=5):
         'features': X_numeric.shape[1]
     }
 
-def approach4_rolling_window_cv(X, y, window_size=0.6, n_splits=5):
-    """Approach 4: Rolling Window CV - Evaluates adaptation to recent trends"""
-    print(f"\n📊 Approach 4: Rolling Window CV (window_size={window_size}, n_splits={n_splits})")
+def approach5_rolling_window_cv(X, y, window_size=0.6, n_splits=5):
+    """Approach 5: Rolling Window CV - Evaluates adaptation to recent trends"""
+    print(f"\n📊 Approach 5: Rolling Window CV (window_size={window_size}, n_splits={n_splits})")
     print("-" * 60)
     print("🎯 Purpose: Evaluates adaptation to recent trends by discarding old data")
     
@@ -392,8 +392,8 @@ def approach4_rolling_window_cv(X, y, window_size=0.6, n_splits=5):
     X_clean = X[mask]
     y_clean = y_single[mask]
     
-    # Get numeric features
-    X_numeric = X_clean.select_dtypes(include=[np.number]).fillna(0)
+    # Get numeric features (preserve NaNs)
+    X_numeric = X_clean.select_dtypes(include=[np.number])
     
     if len(X_numeric.columns) == 0:
         print("⚠️ No numeric features for validation")
@@ -499,10 +499,10 @@ def test_all_approaches_for_target(X, y, target_name):
     results['temporal_holdout'] = approach3_temporal_holdout(X_target, y_target, test_size=0.2)
 
     # Approach 4: Expanding Window CV
-    results['expanding_window'] = approach3_expanding_window_cv(X_target, y_target, n_splits=5)
+    results['expanding_window'] = approach4_expanding_window_cv(X_target, y_target, n_splits=5)
 
     # Approach 5: Rolling Window CV
-    results['rolling_window'] = approach4_rolling_window_cv(X_target, y_target, window_size=0.6, n_splits=5)
+    results['rolling_window'] = approach5_rolling_window_cv(X_target, y_target, window_size=0.6, n_splits=5)
     
     return results
 
@@ -675,7 +675,7 @@ def main():
     
     print(f"\n🔬 CORRECTED TEMPORAL VALIDATION ENGINE")
     print("=" * 60)
-    print(f"📊 Testing 4 validation strategies across {len(target_cols)} targets")
+    print(f"📊 Testing 5 validation strategies across {len(target_cols)} targets")
     print(f"🎯 Targets: {target_cols}")
     print(f"📈 Features: {X.shape[1]}")
     print(f"📅 Data sorted by 보험청약일자 for temporal validation")

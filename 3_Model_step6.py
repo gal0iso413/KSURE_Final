@@ -1,18 +1,19 @@
 """
-XGBoost Risk Prediction Model - Step 6: Enhanced Class Imbalance Strategy (Redesigned)
-=====================================================================================
+XGBoost Risk Prediction Model - Step 6: Class Imbalance Strategy (Simplified)
+============================================================================
 
-Phases in this redesign:
-1. Enhanced Evaluation: Balanced Accuracy, Cohen's Kappa, macro F1, high-risk recall, Classification Reports; log per-fold class prevalence
-2. Algorithm-level Reweighting: Class-Balanced (Effective Number of Samples) weights; optional focal loss (fallback to weights); prior correction at inference
-3. Balanced Bagging Ensemble: M submodels per fold with controlled undersampling of majority + class-balanced weights; average probabilities
-4. Calibration + Business Thresholds: Per-class Platt scaling on a temporal calibration split; optimize thresholds in business priority order (3 → 2 → 1 → 0)
-5. Ordinal Alternative: K−1 cumulative binary XGBoost models with class-balanced weights; derive class probabilities and evaluate
-6. Selection Policy: Select best strategy per target prioritizing high-risk recall with stability guard (mean F1 − std F1)
+Scope in this simplified Step 6:
+1. Phase 1 - Algorithm-level Reweighting: Class-balanced sample weights on a single XGBoost model; predict via argmax
+2. Phase 2 - Calibration (Training-only): Fit a simple Platt/temperature-like calibrator on a training-only slice; predict via argmax
+
+Shared Evaluation Layer:
+- Balanced Accuracy, Cohen's Kappa, Macro F1, High-Risk Recall
+- Per-class metrics and classification reports
+- Per-fold class prevalence logging
 
 Design Focus:
-- Rolling Window CV for temporal robustness; no synthetic sampling to preserve temporal integrity
-- No stratification in temporal windows; handle imbalance via weights/ensembles/thresholds
+- Rolling Window CV for temporal robustness; no synthetic sampling
+- Single-model pipeline for explainability; no ensembles, no ordinal, no thresholds
 - Multi-target analysis (risk_year1, risk_year2, risk_year3, risk_year4)
 - Clear, auditable outputs (metrics, prevalence, classification reports, visualizations)
 """
@@ -46,9 +47,6 @@ WINDOW_SIZE = 0.6
 N_SPLITS = 5
 N_ESTIMATORS = 200
 RANDOM_STATE = 42
-M_ENSEMBLE = 3
-MAJORITY_MAX_RATIO = 3.0  # Cap majority count to <= ratio * minority_total
-BETA_CLASS_BALANCED = 0.999  # Class-balanced weights beta
 CALIBRATION_FRAC = 0.1  # Last fraction of training window reserved for calibration
 CALIBRATION_METHOD = 'sigmoid'  # 'sigmoid' (Platt) or 'none'
 EMBARGO_SAMPLES = 0  # Optional gap between train and test to avoid leakage
@@ -92,7 +90,7 @@ sns.set_palette("husl")
 
 def load_step4_data():
     """Load Step 4 optimized data with proper temporal sorting"""
-    print("🚀 ENHANCED CLASS IMBALANCE STRATEGY - PHASE 1-3 IMPLEMENTATION")
+    print("🚀 CLASS IMBALANCE STRATEGY (SIMPLIFIED) - PHASE 1-2 IMPLEMENTATION")
     print("=" * 70)
     
     df = pd.read_csv('dataset/credit_risk_dataset_step4.csv')
@@ -160,7 +158,7 @@ def validate_metrics(y_true, y_pred):
     return True
 
 def calculate_comprehensive_metrics(y_true, y_pred, y_proba=None):
-    """Phase 1: Enhanced evaluation metrics with validation"""
+    """Evaluation layer: comprehensive metrics with validation"""
     # Validate inputs
     validate_metrics(y_true, y_pred)
     
@@ -205,88 +203,26 @@ def calculate_comprehensive_metrics(y_true, y_pred, y_proba=None):
 
     return metrics
 
-def optimize_ordinal_thresholds(y_true, y_proba):
-    """Phase 3: Data-driven per-class threshold optimization"""
-    best_thresholds = {}
-    
-    for class_idx in [0, 1, 2, 3]:
-        # Treat as binary: class_idx vs others
-        y_binary = (y_true == class_idx).astype(int)
-        thresholds = np.arange(0.1, 0.9, 0.05)
-        best_f1 = 0
-        best_threshold = 0.5
-        
-        for threshold in thresholds:
-            y_pred_binary = (y_proba[:, class_idx] >= threshold).astype(int)
-            f1 = f1_score(y_binary, y_pred_binary, zero_division=0)
-            
-            if f1 > best_f1:
-                best_f1 = f1
-                best_threshold = threshold
-        
-        best_thresholds[class_idx] = best_threshold
-    
-    return best_thresholds
+# Deprecated leakage-prone threshold optimizer removed in simplified Step 6
 
-def apply_ordinal_sequential(y_proba, best_thresholds):
-    """Apply optimized thresholds in business priority order (high risk first)"""
-    y_pred = np.zeros(len(y_proba), dtype=int)
-    
-    for i, probs in enumerate(y_proba):
-        # Check classes in order of business importance (high risk first)
-        for class_idx in [3, 2, 1, 0]:
-            if probs[class_idx] >= best_thresholds[class_idx]:
-                y_pred[i] = class_idx
-                break
-        else:
-            # If no class meets threshold, default to argmax
-            y_pred[i] = np.argmax(probs)
-    
-    return y_pred
+# Deprecated sequential threshold application removed in simplified Step 6
 
 def compute_prevalence(y: np.ndarray) -> dict:
     unique, counts = np.unique(y, return_counts=True)
     total = len(y)
     return {int(k): {'count': int(v), 'pct': float(v/total)} for k, v in zip(unique, counts)}
 
-def compute_class_balanced_weights_eens(y: np.ndarray, beta: float = 0.999) -> np.ndarray:
-    unique, counts = np.unique(y, return_counts=True)
-    class_to_weight = {}
-    for k, n_k in zip(unique, counts):
-        effective_num = 1.0 - (beta ** n_k)
-        class_weight = (1.0 - beta) / max(effective_num, 1e-12)
-        class_to_weight[int(k)] = class_weight
-    weights = np.array([class_to_weight[int(c)] for c in y], dtype=float)
-    return weights / (weights.mean() + 1e-12)
+def compute_class_balanced_weights_eens(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    raise NotImplementedError("EENS weighting is not used in simplified Step 6")
 
-def undersample_indices(y: np.ndarray, majority_class: int = 0, max_ratio: float = 3.0, rng: np.random.RandomState = None) -> np.ndarray:
-    if rng is None:
-        rng = np.random.RandomState(42)
-    indices_by_class = {int(k): np.where(y == k)[0] for k in np.unique(y)}
-    minority_total = sum(len(idxs) for k, idxs in indices_by_class.items() if k != majority_class)
-    majority_cap = int(max_ratio * max(1, minority_total))
-    majority_indices = indices_by_class.get(majority_class, np.array([], dtype=int))
-    if len(majority_indices) > majority_cap:
-        chosen_majority = rng.choice(majority_indices, size=majority_cap, replace=False)
-    else:
-        chosen_majority = majority_indices
-    kept_indices = [chosen_majority]
-    for k, idxs in indices_by_class.items():
-        if k == majority_class:
-            continue
-        kept_indices.append(idxs)
-    kept_indices = np.concatenate(kept_indices) if kept_indices else np.array([], dtype=int)
-    rng.shuffle(kept_indices)
-    return kept_indices
+def undersample_indices(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    raise NotImplementedError("Undersampling is not used in simplified Step 6")
 
-def prior_correction(proba: np.ndarray, train_prior: np.ndarray, ref_prior: np.ndarray = None) -> np.ndarray:
-    K = proba.shape[1]
-    if ref_prior is None:
-        ref_prior = np.full(K, 1.0 / K)
-    adjusted = proba * (ref_prior / np.maximum(train_prior, 1e-12))
-    adjusted = np.clip(adjusted, 1e-12, 1.0)
-    adjusted /= adjusted.sum(axis=1, keepdims=True)
-    return adjusted
+def prior_correction(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    raise NotImplementedError("Prior correction is not used in simplified Step 6")
 
 def fit_platt_scalers(proba: np.ndarray, y_true: np.ndarray) -> list:
     K = proba.shape[1]
@@ -314,224 +250,33 @@ def apply_platt_scalers(proba: np.ndarray, scalers: list) -> np.ndarray:
     calibrated /= calibrated.sum(axis=1, keepdims=True)
     return calibrated
 
-def train_multiclass_ensemble_with_calibration(X_train: pd.DataFrame, y_train: np.ndarray, rng: np.random.RandomState) -> dict:
-    n_train = len(X_train)
-    cal_size = max(1, int(n_train * CALIBRATION_FRAC)) if CALIBRATION_FRAC > 0 else 0
-    if cal_size > 0 and cal_size < n_train:
-        X_inner = X_train.iloc[:-cal_size]
-        y_inner = y_train[:-cal_size]
-        X_cal = X_train.iloc[-cal_size:]
-        y_cal = y_train[-cal_size:]
-    else:
-        X_inner, y_inner = X_train, y_train
-        X_cal, y_cal = None, None
+def train_multiclass_ensemble_with_calibration(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    raise NotImplementedError("Ensemble is not used in simplified Step 6")
 
-    sample_weights_full = compute_class_balanced_weights_eens(y_inner, beta=BETA_CLASS_BALANCED)
-    train_prior = np.bincount(y_inner, minlength=4).astype(float)
-    train_prior = train_prior / (train_prior.sum() + 1e-12)
+def predict_with_ensemble(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    raise NotImplementedError("Ensemble is not used in simplified Step 6")
 
-    models = []
-    for m in range(M_ENSEMBLE):
-        keep_idx = undersample_indices(y_inner, majority_class=0, max_ratio=MAJORITY_MAX_RATIO, rng=rng)
-        X_m = X_inner.iloc[keep_idx]
-        y_m = y_inner[keep_idx]
-        w_m = sample_weights_full[keep_idx]
+def train_ordinal_cumulative(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    raise NotImplementedError("Ordinal alternative is deferred from Step 6")
 
-        model = xgb.XGBClassifier(
-            n_estimators=N_ESTIMATORS,
-            random_state=RANDOM_STATE + m,
-            verbosity=0,
-            n_jobs=-1,
-            tree_method='hist',
-            eval_metric='mlogloss'
-        )
+def predict_ordinal_proba(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    raise NotImplementedError("Ordinal alternative is deferred from Step 6")
 
-        eval_set = None
-        if X_cal is not None and len(X_cal) > 0:
-            eval_set = [(X_cal, y_cal)]
-        try:
-            model.fit(X_m, y_m, sample_weight=w_m, eval_set=eval_set, verbose=False, early_stopping_rounds=50 if eval_set else None)
-        except Exception:
-            model.fit(X_m, y_m, sample_weight=w_m)
-        models.append(model)
+def run_multiclass_ensemble(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    return None
 
-    platt_scalers = None
-    if X_cal is not None and len(X_cal) > 0 and CALIBRATION_METHOD == 'sigmoid':
-        proba_cal = np.mean([mdl.predict_proba(X_cal) for mdl in models], axis=0)
-        platt_scalers = fit_platt_scalers(proba_cal, y_cal)
-
-    return {
-        'models': models,
-        'train_prior': train_prior,
-        'platt_scalers': platt_scalers
-    }
-
-def predict_with_ensemble(bundle: dict, X: pd.DataFrame, ref_prior: np.ndarray = None) -> np.ndarray:
-    models = bundle['models']
-    platt_scalers = bundle.get('platt_scalers')
-    train_prior = bundle['train_prior']
-    proba = np.mean([mdl.predict_proba(X) for mdl in models], axis=0)
-    if platt_scalers is not None and CALIBRATION_METHOD == 'sigmoid':
-        proba = apply_platt_scalers(proba, platt_scalers)
-    proba = prior_correction(proba, train_prior=train_prior, ref_prior=ref_prior)
-    return proba
-
-def train_ordinal_cumulative(X_train: pd.DataFrame, y_train: np.ndarray) -> list:
-    models = []
-    for k in [1, 2, 3]:
-        y_bin = (y_train >= k).astype(int)
-        w = compute_class_balanced_weights_eens(y_bin, beta=BETA_CLASS_BALANCED)
-        mdl = xgb.XGBClassifier(
-            n_estimators=N_ESTIMATORS,
-            random_state=RANDOM_STATE + k,
-            verbosity=0,
-            n_jobs=-1,
-            tree_method='hist',
-            eval_metric='logloss'
-        )
-        mdl.fit(X_train, y_bin, sample_weight=w)
-        models.append(mdl)
-    return models
-
-def predict_ordinal_proba(models: list, X: pd.DataFrame) -> np.ndarray:
-    p_ge_1 = models[0].predict_proba(X)[:, 1]
-    p_ge_2 = models[1].predict_proba(X)[:, 1]
-    p_ge_3 = models[2].predict_proba(X)[:, 1]
-    p0 = 1.0 - p_ge_1
-    p1 = np.clip(p_ge_1 - p_ge_2, 0.0, 1.0)
-    p2 = np.clip(p_ge_2 - p_ge_3, 0.0, 1.0)
-    p3 = p_ge_3
-    proba = np.vstack([p0, p1, p2, p3]).T
-    proba = np.clip(proba, 1e-12, 1.0)
-    proba /= proba.sum(axis=1, keepdims=True)
-    return proba
-
-def run_multiclass_ensemble(X_numeric, y_target, indices_list, target_name, ref_prior_global: np.ndarray):
-    print(f"\n📊 Multiclass Balanced Bagging Ensemble for {target_name}")
-    print("-" * 60)
-    rng = np.random.RandomState(RANDOM_STATE)
-    metrics_list = []
-    all_true_values, all_predictions, all_probabilities = [], [], []
-    prevalence_per_fold = []
-    optimized_thresholds_list = []
-
-    for fold, (train_idx, test_idx) in enumerate(indices_list):
-        X_train, X_test = X_numeric.iloc[train_idx], X_numeric.iloc[test_idx]
-        y_train, y_test = y_target.iloc[train_idx], y_target.iloc[test_idx]
-
-        train_mask = ~pd.isna(y_train)
-        test_mask = ~pd.isna(y_test)
-        X_train_clean = X_train[train_mask]
-        y_train_clean = y_train[train_mask].astype(int).values
-        X_test_clean = X_test[test_mask]
-        y_test_clean = y_test[test_mask].astype(int).values
-        if len(y_train_clean) == 0 or len(y_test_clean) == 0:
-            continue
-
-        prev = compute_prevalence(y_train_clean)
-        prevalence_per_fold.append(prev)
-        print(f"   Fold {fold+1} train prevalence: {prev}")
-
-        bundle = train_multiclass_ensemble_with_calibration(X_train_clean, y_train_clean, rng)
-        proba = predict_with_ensemble(bundle, X_test_clean, ref_prior=ref_prior_global)
-        best_thresholds = optimize_ordinal_thresholds(y_test_clean, proba)
-        y_pred = apply_ordinal_sequential(proba, best_thresholds)
-
-        metrics = calculate_comprehensive_metrics(y_test_clean, y_pred, proba)
-        metrics_list.append(metrics)
-        all_true_values.extend(y_test_clean)
-        all_predictions.extend(y_pred)
-        all_probabilities.extend(proba)
-        optimized_thresholds_list.append(best_thresholds)
-
-        print(f"   Fold {fold+1}: F1={metrics['f1_macro']:.4f}, High-Risk Recall={metrics['high_risk_recall']:.4f}, BalAcc={metrics['balanced_accuracy']:.4f}")
-
-    if not metrics_list:
-        return None
-
-    avg_metrics = {k: np.mean([m[k] for m in metrics_list]) for k in metrics_list[0].keys() if k not in ['per_class', 'classification_report']}
-    avg_thresholds = {c: np.mean([d[c] for d in optimized_thresholds_list]) for c in [0,1,2,3]}
-    stability = avg_metrics['f1_macro'] - np.std([m['f1_macro'] for m in metrics_list])
-
-    return {
-        'approach': 'Multiclass Balanced Bagging',
-        'description': 'Ensemble with undersampling + class-balanced weights, calibrated and prior-corrected with business thresholds',
-        'metrics': avg_metrics,
-        'fold_metrics': metrics_list,
-        'n_splits': len(metrics_list),
-        'features': X_numeric.shape[1],
-        'all_true_values': all_true_values,
-        'all_predictions': all_predictions,
-        'all_probabilities': all_probabilities,
-        'avg_thresholds': avg_thresholds,
-        'prevalence_per_fold': prevalence_per_fold,
-        'stability_score': stability
-    }
-
-def run_ordinal_alternative(X_numeric, y_target, indices_list, target_name, ref_prior_global: np.ndarray):
-    print(f"\n📊 Ordinal Alternative (Cumulative) for {target_name}")
-    print("-" * 60)
-    metrics_list = []
-    all_true_values, all_predictions, all_probabilities = [], [], []
-    prevalence_per_fold = []
-
-    for fold, (train_idx, test_idx) in enumerate(indices_list):
-        X_train, X_test = X_numeric.iloc[train_idx], X_numeric.iloc[test_idx]
-        y_train, y_test = y_target.iloc[train_idx], y_target.iloc[test_idx]
-
-        train_mask = ~pd.isna(y_train)
-        test_mask = ~pd.isna(y_test)
-        X_train_clean = X_train[train_mask]
-        y_train_clean = y_train[train_mask].astype(int).values
-        X_test_clean = X_test[test_mask]
-        y_test_clean = y_test[test_mask].astype(int).values
-        if len(y_train_clean) == 0 or len(y_test_clean) == 0:
-            continue
-
-        prev = compute_prevalence(y_train_clean)
-        prevalence_per_fold.append(prev)
-        print(f"   Fold {fold+1} train prevalence: {prev}")
-
-        models = train_ordinal_cumulative(X_train_clean, y_train_clean)
-        proba = predict_ordinal_proba(models, X_test_clean)
-        train_prior = np.bincount(y_train_clean, minlength=4).astype(float)
-        train_prior = train_prior / (train_prior.sum() + 1e-12)
-        proba = prior_correction(proba, train_prior=train_prior, ref_prior=ref_prior_global)
-
-        best_thresholds = optimize_ordinal_thresholds(y_test_clean, proba)
-        y_pred = apply_ordinal_sequential(proba, best_thresholds)
-
-        metrics = calculate_comprehensive_metrics(y_test_clean, y_pred, proba)
-        metrics_list.append(metrics)
-        all_true_values.extend(y_test_clean)
-        all_predictions.extend(y_pred)
-        all_probabilities.extend(proba)
-
-        print(f"   Fold {fold+1}: F1={metrics['f1_macro']:.4f}, High-Risk Recall={metrics['high_risk_recall']:.4f}, BalAcc={metrics['balanced_accuracy']:.4f}")
-
-    if not metrics_list:
-        return None
-
-    avg_metrics = {k: np.mean([m[k] for m in metrics_list]) for k in metrics_list[0].keys() if k not in ['per_class', 'classification_report']}
-    stability = avg_metrics['f1_macro'] - np.std([m['f1_macro'] for m in metrics_list])
-
-    return {
-        'approach': 'Ordinal Cumulative',
-        'description': 'K−1 cumulative XGBoost models with class-balanced weights and prior correction',
-        'metrics': avg_metrics,
-        'fold_metrics': metrics_list,
-        'n_splits': len(metrics_list),
-        'features': X_numeric.shape[1],
-        'all_true_values': all_true_values,
-        'all_predictions': all_predictions,
-        'all_probabilities': all_probabilities,
-        'prevalence_per_fold': prevalence_per_fold,
-        'stability_score': stability
-    }
+def run_ordinal_alternative(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    return None
 
 def approach_baseline(X_numeric, y_target, indices_list, target_name):
-    """Baseline: No imbalance handling with proper data collection"""
-    print(f"\n📊 Phase 1-2: Baseline (No Imbalance Handling) for {target_name}")
+    """Original baseline: No imbalance handling, no calibration"""
+    print(f"\n📊 Original Baseline (No Imbalance Handling) for {target_name}")
     print("-" * 60)
     
     metrics_list = []
@@ -568,7 +313,7 @@ def approach_baseline(X_numeric, y_target, indices_list, target_name):
         y_pred = model.predict(X_test_clean)
         y_proba = model.predict_proba(X_test_clean)
         
-        # Phase 1: Enhanced metrics
+        # Evaluation
         metrics = calculate_comprehensive_metrics(y_test_clean, y_pred, y_proba)
         metrics_list.append(metrics)
         
@@ -595,8 +340,8 @@ def approach_baseline(X_numeric, y_target, indices_list, target_name):
     print(f"   ⚖️  Average Balanced Accuracy: {avg_metrics['balanced_accuracy']:.4f}")
     
     return {
-        'approach': 'Baseline (No Imbalance Handling)',
-        'description': 'No imbalance strategy applied',
+        'approach': 'Original',
+        'description': 'No imbalance handling, no calibration',
         'metrics': avg_metrics,
         'fold_metrics': metrics_list,
         'n_splits': len(metrics_list),
@@ -607,8 +352,8 @@ def approach_baseline(X_numeric, y_target, indices_list, target_name):
     }
 
 def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
-    """Phase 2: Corrected Algorithm-Level Method using sample_weight"""
-    print(f"\n📊 Phase 2: Enhanced Sample Weights for {target_name}")
+    """Phase 1: Algorithm-level reweighting via sample weights"""
+    print(f"\n📊 Phase 1: Class Weights (Balanced sample_weight) for {target_name}")
     print("-" * 60)
     
     metrics_list = []
@@ -632,7 +377,7 @@ def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
         if len(y_train_clean) == 0 or len(y_test_clean) == 0:
             continue
         
-        # Phase 2: Corrected sample weights
+        # Phase 1: Class-balanced sample weights
         sample_weights = compute_sample_weight('balanced', y=y_train_clean)
         
         model = xgb.XGBClassifier(
@@ -648,7 +393,7 @@ def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
         y_pred = model.predict(X_test_clean)
         y_proba = model.predict_proba(X_test_clean)
         
-        # Phase 1: Enhanced metrics
+        # Evaluation
         metrics = calculate_comprehensive_metrics(y_test_clean, y_pred, y_proba)
         metrics_list.append(metrics)
         
@@ -675,8 +420,8 @@ def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
     print(f"   ⚖️  Average Balanced Accuracy: {avg_metrics['balanced_accuracy']:.4f}")
     
     return {
-        'approach': 'Enhanced Sample Weights',
-        'description': 'Algorithm-level imbalance handling using corrected sample_weight',
+        'approach': 'Phase 1 - Class Weights',
+        'description': 'Algorithm-level imbalance handling using class-balanced sample weights',
         'metrics': avg_metrics,
         'fold_metrics': metrics_list,
         'n_splits': len(metrics_list),
@@ -686,16 +431,15 @@ def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
         'all_probabilities': all_probabilities
     }
 
-def approach_threshold_optimization(X_numeric, y_target, indices_list, target_name):
-    """Phase 3: Data-driven ordinal threshold optimization with proper data collection"""
-    print(f"\n📊 Phase 3: Ordinal Threshold Optimization for {target_name}")
+def approach_calibrated_weights(X_numeric, y_target, indices_list, target_name):
+    """Phase 2: Calibration on training-only split, built on Phase 1 class weights"""
+    print(f"\n📊 Phase 2: Calibrated Weights (Training-only calibration) for {target_name}")
     print("-" * 60)
     
     metrics_list = []
     all_true_values = []
     all_predictions = []
     all_probabilities = []
-    optimized_thresholds_list = []
     
     for fold, (train_idx, test_idx) in enumerate(indices_list):
         X_train, X_test = X_numeric.iloc[train_idx], X_numeric.iloc[test_idx]
@@ -706,15 +450,27 @@ def approach_threshold_optimization(X_numeric, y_target, indices_list, target_na
         test_mask = ~pd.isna(y_test)
         
         X_train_clean = X_train[train_mask]
-        y_train_clean = y_train[train_mask].astype(int)
+        y_train_clean = y_train[train_mask].astype(int).values
         X_test_clean = X_test[test_mask]
-        y_test_clean = y_test[test_mask].astype(int)
+        y_test_clean = y_test[test_mask].astype(int).values
         
         if len(y_train_clean) == 0 or len(y_test_clean) == 0:
             continue
         
-        # Use sample weights for base model
-        sample_weights = compute_sample_weight('balanced', y=y_train_clean)
+        # Temporal calibration split within training only
+        n_train_fold = len(X_train_clean)
+        cal_size = int(max(1, n_train_fold * CALIBRATION_FRAC)) if CALIBRATION_FRAC > 0 else 0
+        if cal_size > 0 and cal_size < n_train_fold:
+            X_inner = X_train_clean.iloc[:-cal_size]
+            y_inner = y_train_clean[:-cal_size]
+            X_cal = X_train_clean.iloc[-cal_size:]
+            y_cal = y_train_clean[-cal_size:]
+        else:
+            X_inner, y_inner = X_train_clean, y_train_clean
+            X_cal, y_cal = None, None
+
+        # Phase 1: Class-balanced sample weights on inner-training
+        sample_weights_inner = compute_sample_weight('balanced', y=y_inner)
         
         model = xgb.XGBClassifier(
             n_estimators=N_ESTIMATORS,
@@ -725,63 +481,54 @@ def approach_threshold_optimization(X_numeric, y_target, indices_list, target_na
             eval_metric='mlogloss'
         )
         
-        model.fit(X_train_clean, y_train_clean, sample_weight=sample_weights)
-        y_proba = model.predict_proba(X_test_clean)
-        
-        # Phase 3: Optimize ordinal thresholds per class
-        best_thresholds = optimize_ordinal_thresholds(y_test_clean, y_proba)
-        
-        # Apply optimized ordinal thresholds in business priority order
-        y_pred_optimized = apply_ordinal_sequential(y_proba, best_thresholds)
-        
-        # Phase 1: Enhanced metrics
-        metrics = calculate_comprehensive_metrics(y_test_clean, y_pred_optimized, y_proba)
+        model.fit(X_inner, y_inner, sample_weight=sample_weights_inner)
+
+        platt_scalers = None
+        if X_cal is not None and len(X_cal) > 0 and CALIBRATION_METHOD == 'sigmoid':
+            proba_cal = model.predict_proba(X_cal)
+            platt_scalers = fit_platt_scalers(proba_cal, y_cal)
+
+        # Predict on test and calibrate
+        proba_test = model.predict_proba(X_test_clean)
+        if platt_scalers is not None:
+            proba_test = apply_platt_scalers(proba_test, platt_scalers)
+
+        y_pred = np.argmax(proba_test, axis=1)
+
+        # Evaluation
+        metrics = calculate_comprehensive_metrics(y_test_clean, y_pred, proba_test)
         metrics_list.append(metrics)
         
-        # Store data for visualization (FIXED: Include true values)
+        # Store
         all_true_values.extend(y_test_clean)
-        all_predictions.extend(y_pred_optimized)
-        all_probabilities.extend(y_proba)
-        optimized_thresholds_list.append(best_thresholds)
+        all_predictions.extend(y_pred)
+        all_probabilities.extend(proba_test)
         
-        print(f"   Fold {fold+1}: Train={len(X_train_clean):,}, Test={len(X_test_clean):,}")
-        print(f"      Optimized Thresholds: {best_thresholds}")
+        print(f"   Fold {fold+1}: Train={len(X_inner):,} (+Cal={len(X_cal) if X_cal is not None else 0:,}), Test={len(X_test_clean):,}")
         print(f"      F1-Macro: {metrics['f1_macro']:.4f}, High-Risk Recall: {metrics['high_risk_recall']:.4f}")
         print(f"      Balanced Accuracy: {metrics['balanced_accuracy']:.4f}, Cohen's Kappa: {metrics['cohen_kappa']:.4f}")
     
     if not metrics_list:
         return None
     
-    # Calculate average metrics
-    avg_metrics = {}
-    for key in metrics_list[0].keys():
-        if key != 'per_class' and key != 'classification_report':
-            avg_metrics[key] = np.mean([m[key] for m in metrics_list])
-    
-    # Calculate average thresholds across folds
-    avg_thresholds = {}
-    for class_idx in [0, 1, 2, 3]:
-        class_thresholds = [thresh[class_idx] for thresh in optimized_thresholds_list]
-        avg_thresholds[class_idx] = np.mean(class_thresholds)
-    
-    print(f"   🎯 Average F1-Score (Macro): {avg_metrics['f1_macro']:.4f}")
-    print(f"   🔥 Average High-Risk Recall: {avg_metrics['high_risk_recall']:.4f}")
-    print(f"   ⚖️  Average Balanced Accuracy: {avg_metrics['balanced_accuracy']:.4f}")
-    print(f"   🎛️  Average Optimized Thresholds: {avg_thresholds}")
+    # Averages
+    avg_metrics = {k: np.mean([m[k] for m in metrics_list]) for k in metrics_list[0].keys() if k not in ['per_class', 'classification_report']}
     
     return {
-        'approach': 'Ordinal Threshold Optimization',
-        'description': 'Data-driven per-class threshold optimization with business-priority sequential application',
+        'approach': 'Phase 2 - Calibrated Weights',
+        'description': 'Phase 1 class weights with training-only probability calibration; argmax decision',
         'metrics': avg_metrics,
         'fold_metrics': metrics_list,
         'n_splits': len(metrics_list),
         'features': X_numeric.shape[1],
-        'all_true_values': all_true_values,  # FIXED: Include true values
+        'all_true_values': all_true_values,
         'all_predictions': all_predictions,
-        'all_probabilities': all_probabilities,
-        'optimized_thresholds': optimized_thresholds_list,
-        'avg_thresholds': avg_thresholds
+        'all_probabilities': all_probabilities
     }
+
+def approach_threshold_optimization(*args, **kwargs):
+    """Deprecated in simplified Step 6."""
+    return None
 
 def create_comprehensive_visualizations(all_results, results_dir):
     """Create comprehensive visualizations for redesigned methods"""
@@ -794,7 +541,7 @@ def create_comprehensive_visualizations(all_results, results_dir):
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
     fig.suptitle('Enhanced Class Imbalance Strategy - Performance Comparison', fontsize=16, fontweight='bold')
     
-    methods = ['Multiclass Balanced Bagging', 'Ordinal Cumulative']
+    methods = ['Original', 'Phase 1 - Class Weights', 'Phase 2 - Calibrated Weights']
     metrics = ['f1_macro', 'high_risk_recall', 'balanced_accuracy', 'cohen_kappa']
     metric_names = ['F1-Macro', 'High-Risk Recall', 'Balanced Accuracy', "Cohen's Kappa"]
     
@@ -802,18 +549,21 @@ def create_comprehensive_visualizations(all_results, results_dir):
         ax = axes[i//2, i%2]
         
         method_scores = []
+        labels_to_plot = []
         for method in methods:
             scores = []
             for target, results in all_results.items():
                 if results and method in results and results[method]:
                     scores.append(results[method]['metrics'][metric])
-            method_scores.append(scores)
-        
-        # Create box plot
-        bp = ax.boxplot(method_scores, labels=methods, patch_artist=True)
-        colors = ['lightblue', 'lightgreen']
-        for patch, color in zip(bp['boxes'], colors):
-            patch.set_facecolor(color)
+            if scores:
+                method_scores.append(scores)
+            labels_to_plot.append(method)
+
+        if method_scores:
+            bp = ax.boxplot(method_scores, labels=labels_to_plot, patch_artist=True)
+            colors = ['lightblue', 'lightgreen', 'lightcoral']
+            for patch, color in zip(bp['boxes'], colors[:len(labels_to_plot)]):
+                patch.set_facecolor(color)
         
         ax.set_title(f'{metric_name} Comparison', fontsize=12)
         ax.set_ylabel('Score', fontsize=10)
@@ -863,8 +613,8 @@ def create_comprehensive_visualizations(all_results, results_dir):
     print(f"✅ Visualizations saved to: {results_dir}")
 
 def test_all_methods_for_target(X, y, target_name):
-    """Test redesigned imbalance methods for a specific target"""
-    print(f"\n🎯 TESTING REDESIGNED IMBALANCE METHODS FOR {target_name}")
+    """Test simplified imbalance methods for a specific target"""
+    print(f"\n🎯 TESTING SIMPLIFIED IMBALANCE METHODS FOR {target_name}")
     print("=" * 70)
     
     # Handle both DataFrame and Series for y
@@ -879,8 +629,8 @@ def test_all_methods_for_target(X, y, target_name):
     
     print(f"📊 Available data for {target_name}: {len(X_target):,} samples")
     
-    # Get numeric features
-    X_numeric = X_target.select_dtypes(include=[np.number]).fillna(0)
+    # Get numeric features (preserve NaNs for XGBoost's native missing handling)
+    X_numeric = X_target.select_dtypes(include=[np.number])
     
     # Generate consistent rolling window indices
     indices_list = generate_rolling_window_indices(X_numeric, WINDOW_SIZE, N_SPLITS)
@@ -894,26 +644,17 @@ def test_all_methods_for_target(X, y, target_name):
     ref_prior_global = ref_prior_global / (ref_prior_global.sum() + 1e-12)
 
     results = {}
-    results['Multiclass Balanced Bagging'] = None
-    results['Ordinal Cumulative'] = None
-
-    # Multiclass Balanced Bagging
-    results['Multiclass Balanced Bagging'] = run_multiclass_ensemble(
-        X_numeric, y_target, indices_list, target_name, ref_prior_global
-    )
-
-    # Ordinal cumulative alternative
-    results['Ordinal Cumulative'] = run_ordinal_alternative(
-        X_numeric, y_target, indices_list, target_name, ref_prior_global
-    )
+    results['Original'] = approach_baseline(X_numeric, y_target, indices_list, target_name)
+    results['Phase 1 - Class Weights'] = approach_sample_weights(X_numeric, y_target, indices_list, target_name)
+    results['Phase 2 - Calibrated Weights'] = approach_calibrated_weights(X_numeric, y_target, indices_list, target_name)
     
     return results
 
 def select_best_imbalance_method(all_results):
-    """Select the best method per target and summarize overall"""
+    """Select the best simplified method per target and summarize overall"""
     print(f"\n🎯 SELECTING BEST METHODS (Per Target)")
     print("-" * 60)
-    methods = ['Multiclass Balanced Bagging', 'Ordinal Cumulative']
+    methods = ['Original', 'Phase 1 - Class Weights', 'Phase 2 - Calibrated Weights']
     method_scores_overall = {m: [] for m in methods}
     per_target_best = {}
 
@@ -925,8 +666,8 @@ def select_best_imbalance_method(all_results):
         candidates = {m: results[m] for m in methods if m in results and results[m]}
         if not candidates:
             continue
-        best = sorted(candidates.items(), key=lambda kv: (kv[1]['metrics']['high_risk_recall'], kv[1].get('stability_score', -1e9)), reverse=True)[0]
-        per_target_best[target] = { 'method': best[0], 'metrics': best[1]['metrics'], 'stability_score': best[1].get('stability_score') }
+        best = sorted(candidates.items(), key=lambda kv: (kv[1]['metrics']['high_risk_recall'], kv[1]['metrics']['f1_macro']), reverse=True)[0]
+        per_target_best[target] = { 'method': best[0], 'metrics': best[1]['metrics'] }
         method_scores_overall[best[0]].append(best[1]['metrics']['f1_macro'])
         print(f"   • {target}: {best[0]} (High-Risk Recall={best[1]['metrics']['high_risk_recall']:.4f}, F1={best[1]['metrics']['f1_macro']:.4f})")
 
@@ -956,21 +697,18 @@ def save_enhanced_results(all_results, best_selection, results_dir):
     with open(f'{results_dir}/step6_enhanced_results.json', 'w', encoding='utf-8') as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False, default=str)
     
-    # Create enhanced summary
+    # Create simplified summary
     summary = {
         'execution_date': datetime.now().isoformat(),
-        'approach': 'enhanced_imbalance_strategy_redesign_phases_1_6',
+        'approach': 'class_imbalance_strategy_simplified_phases_1_2',
         'targets_tested': len(all_results),
-        'methods_tested': 2,
+        'methods_tested': 3,
         'per_target_best': best_selection['per_target_best'],
         'method_summary': best_selection['method_summary'],
         'key_improvements': {
-            'phase_1': 'Enhanced evaluation + per-fold class prevalence + classification reports',
-            'phase_2': 'Class-balanced (EENS) weights with prior correction at inference',
-            'phase_3': 'Balanced bagging ensemble (undersampling majority + weights)',
-            'phase_4': 'Per-class Platt calibration + business-priority thresholds',
-            'phase_5': 'Ordinal cumulative alternative (K−1 models)',
-            'phase_6': 'Per-target selection with stability guard'
+            'phase_1': 'Algorithm-level reweighting (class-balanced sample weights)',
+            'phase_2': 'Calibration on training-only split (Platt/temperature); argmax decision',
+            'deferred': 'Ensembles, business thresholds, and ordinal cumulative moved to later steps'
         }
     }
     
@@ -982,23 +720,19 @@ def save_enhanced_results(all_results, best_selection, results_dir):
     return results_dir
 
 def main():
-    """Main execution - Enhanced Class Imbalance Strategy (Redesigned)"""
+    """Main execution - Simplified Class Imbalance Strategy (Phases 1-2)"""
 
     df, X, y, exclude_cols, target_cols = load_step4_data()
 
-    print(f"\n🔬 ENHANCED CLASS IMBALANCE STRATEGY ENGINE - REDESIGN")
+    print(f"\n🔬 CLASS IMBALANCE STRATEGY ENGINE - SIMPLIFIED")
     print("=" * 70)
-    print(f"📊 Testing redesigned methods across {len(target_cols)} targets")
+    print(f"📊 Testing simplified methods across {len(target_cols)} targets")
     print(f"🎯 Targets: {target_cols}")
     print(f"📈 Features: {X.shape[1]}")
     print(f"📅 Using Rolling Window CV for temporal robustness")
-    print(f"🛡️ No synthetic sampling; algorithm-level and ensemble techniques only")
-    print(f"📊 Phase 1: Enhanced evaluation + prevalence logging")
-    print(f"⚖️  Phase 2: Class-balanced weights + prior correction")
-    print(f"🧰 Phase 3: Balanced bagging ensemble")
-    print(f"🎚️ Phase 4: Calibration + business thresholds")
-    print(f"📈 Phase 5: Ordinal cumulative alternative")
-    print(f"🧭 Phase 6: Per-target selection with stability guard")
+    print(f"🛡️ No synthetic sampling; single-model pipeline only")
+    print(f"⚖️  Phase 1: Class-balanced sample weights (argmax)")
+    print(f"🎚️ Phase 2: Training-only calibration on probabilities (argmax)")
 
     all_results = {}
 
@@ -1014,12 +748,12 @@ def main():
     # Create comprehensive visualizations
     create_comprehensive_visualizations(all_results, results_dir)
 
-    print(f"\n🎉 ENHANCED CLASS IMBALANCE STRATEGY COMPLETED!")
+    print(f"\n🎉 SIMPLIFIED CLASS IMBALANCE STRATEGY COMPLETED!")
     print("=" * 70)
-    print("✅ Phases 1-6 implemented with temporal robustness and business focus")
-    print("✅ Per-target best method selected with stability consideration")
+    print("✅ Phases 1-2 implemented with temporal robustness and explainability")
+    print("✅ Per-target best method selected")
     print("✅ Comprehensive visualizations and summaries created")
-    print(f"✅ Enhanced results saved in: {results_dir}")
+    print(f"✅ Results saved in: {results_dir}")
 
     return best_selection
 

@@ -888,7 +888,7 @@ class DatasetCreator:
         high_missing = missing_pct[missing_pct > 10].sort_values(ascending=False)
         if len(high_missing) > 0:
             print(f"   Features with >10% missing: {len(high_missing)}")
-            for col, pct in high_missing.head(5).items():
+            for col, pct in high_missing.head(10).items():
                 print(f"      {col}: {pct}%")
         else:
             print("   ✅ All features have <10% missing data")
@@ -915,11 +915,12 @@ def get_example_config():
         'risk_table_path': 'dataset/조기경보이력_리스크단계.csv',
         'x_variable_paths': {
             'financial': 'dataset/KED재무DATA.csv',
+            'trade': 'dataset/무역통계진흥원수출실적.csv',
             'grade': 'dataset/KED종합신용정보.csv', 
             'gdp': 'dataset/gdp_data.csv',
-            'trade': 'dataset/trade_data.csv',
-            'industry': 'dataset/업종코드.csv',
-            'exchange': 'dataset/exchange_rate_data.csv',
+            'index_trade': 'dataset/trade_data.csv',
+            'index_industry': 'dataset/업종코드.csv',
+            'index_exchange': 'dataset/exchange_rate_data.csv',
         },
         
         # Table-specific column mappings
@@ -940,6 +941,10 @@ def get_example_config():
                     'date_column': '기준일자',
                     'join_columns': ('사업자등록번호', '사업자등록번호')  # (x_table_column, base_table_column)
                 },
+                'trade': {
+                    'date_column': '기준일자',
+                    'join_columns': ('사업자등록번호', '사업자등록번호')  # (x_table_column, base_table_column)
+                },
                 'grade': {
                     'date_column': '평가일자',
                     'join_columns': ('사업자등록번호', '사업자등록번호')  # (x_table_column, base_table_column)
@@ -948,15 +953,15 @@ def get_example_config():
                     'date_column': 'date', 
                     # No join_columns specified = market-level data
                 },
-                'trade': {
+                'index_trade': {
                     'date_column': 'date', 
                     # No join_columns specified = market-level data
                 },
-                'industry': {
+                'index_industry': {
                     'join_columns': ('업종코드', '업종코드1')  # (x_table_column, base_table_column)
                     # No date_column needed for static mode
                 },
-                'exchange': {
+                'index_exchange': {
                     'date_column': 'date', 
                     # No join_columns specified = market-level data
                 }
@@ -966,61 +971,68 @@ def get_example_config():
         # Specific columns to include from X variables (if not specified, uses all columns)
         'x_include_columns': {
             'financial': None,
+            'trade': None,
             'grade': None, 
             'gdp': None,
-            'trade': None,
-            'industry': None,
-            'exchange': None,
+            'index_trade': None,
+            'index_industry': None,
+            'index_exchange': None,
         },
         
         # Columns to exclude from X variables (applied after include filter)
         'x_exclude_columns': {
             'financial': [],
+            'trade': [],
             'grade': ['KED신용등급구분코드'],
             'gdp': ['quarter'],
-            'trade': [],
-            'industry': ['중분류','세세분류'],
-            'exchange': [],
+            'index_trade': [],
+            'index_industry': ['중분류','세세분류'],
+            'index_exchange': [],
         },
         
         # Lookback periods for each data type
         'lookback_periods': {
             'financial': 3,  # 3 periods of financial data
+            'trade': 3,
             'grade': 1,       # 1 period of grade data
             'gdp': 1,
-            'trade': 1,
-            'industry': 1,
-            'exchange': 1,
+            'index_trade': 1,
+            'index_industry': 1,
+            'index_exchange': 1,
         },
         
         # Period intervals (how many days between periods)
         'x_period_intervals': {
             'financial': 'yearly',  # 365 days for quarterly financial reports
+            'trade': 'yearly',
             'grade': 'yearly',
             'gdp': 'yearly',
-            'trade': 'yearly',
-            'exchange': 'yearly',
+            'index_trade': 'yearly',
+            'index_industry': 'yearly',
+            'index_exchange': 'yearly',
             # Options: 'daily'(1), 'weekly'(7), 'monthly'(30), 'quarterly'(90), 'yearly'(365), or integer days
         },
         
         # X variable processing modes
         'x_variable_modes': {
             'financial': 'lookback',  # Creates: financial_revenue_t0, financial_revenue_t1, ... 
+            'trade': 'lookback',
             'grade': 'nearest',       # Creates: grade_score_0 (most recent grade)
             'gdp': 'nearest',
-            'trade': 'nearest',
-            'industry': 'static',     # Creates: industry_코드, industry_분류명 (no time suffixes)
-            'exchange': 'nearest',
+            'index_trade': 'nearest',
+            'index_industry': 'static',     # Creates: industry_코드, industry_분류명 (no time suffixes)
+            'index_exchange': 'nearest',
         },
         
         # Aggregation methods for X variables (not used for static mode)
         'x_aggregation_methods': {
             'financial': 'mean',      # Average financial data in each period (smooths outliers)
+            'trade': 'mean',
             'grade': 'most_recent',   # Most recent grade in each period
             'gdp': 'mean',
-            'trade': 'mean',    
-            # 'industry': not needed for static mode
-            'exchange': 'mean',
+            'index_trade': 'mean',    
+            # 'index_industry': not needed for static mode
+            'index_exchange': 'mean',
         },
         
         # Prediction horizons
@@ -1029,11 +1041,12 @@ def get_example_config():
         # Data availability delays (days) - realistic delays for financial data
         'data_availability_delays': {
             'financial': 45,     # Financial reports: 45 days after quarter/year end
+            'trade': 30,         # Trade statistics: 30 days comprehensive data
             'grade': 7,          # Credit ratings: 7 days processing delay
             'gdp': 45,           # GDP data: 45 days after quarter end
-            'trade': 30,         # Trade statistics: 30 days comprehensive data
-            'industry': 0,       # Industry codes: static/immediate (no delay)
-            'exchange': 1,       # Exchange rate data: 1 day after daily data
+            'index_trade': 30,         # Trade statistics: 30 days comprehensive data
+            'index_industry': 0,       # Industry codes: static/immediate (no delay)
+            'index_exchange': 1,       # Exchange rate data: 1 day after daily data
         },
         
         # Apply availability delays to make model production-realistic

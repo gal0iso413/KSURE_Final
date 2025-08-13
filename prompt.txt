@@ -47,34 +47,33 @@
 - **Multi-Target Analysis**: Tested across risk_year1, risk_year2, risk_year3, risk_year4
 - *Goal: Establish the most reliable temporal validation approach*
 
-### **Phase 4: Class Imbalance Strategy**
+### **Phase 4: Class Imbalance Strategy (Simplified for Explainability)**
 
 **Step 6: Class Imbalance Strategy**
 - **Apply to Optimized Features**: Use best feature set from Step 4 (27 features)
 - **Use Rolling Window CV**: From Step 5 for temporal robustness
-- **Phase 1 - Enhanced Evaluation**: Balanced Accuracy, Cohen's Kappa, Macro F1, High-Risk Recall, Classification Reports; per-fold class prevalence logging
-- **Phase 2 - Algorithm-Level Reweighting**: Class-Balanced (Effective Number of Samples) weights; optional focal loss fallback; prior correction at inference
-- **Phase 3 - Balanced Bagging Ensemble**: Train M submodels per fold with controlled undersampling of class 0 + class-balanced weights; average probabilities
-- **Phase 4 - Calibration + Business Thresholds**: Per-class Platt calibration on temporal split; optimize thresholds in business priority order (3→2→1→0)
-- **Phase 5 - Ordinal Alternative**: Train K−1 cumulative ordinal models; compare against multiclass ensemble
-- **Phase 6 - Selection Policy**: Select best strategy per target (risk_year1-4) prioritizing high-risk recall with stability guard (mean F1 − std F1)
+- **Phase 1 - Algorithm-Level Reweighting**: Class-balanced sample weights (e.g., sklearn 'balanced'). Single XGBoost model; predictions via argmax.
+- **Phase 2 - Calibration (Training-only)**: Calibrate probabilities (e.g., Platt/temperature) using only training data (held-out slice or OOF). Predictions via argmax. No threshold search.
+- **Baselines**: Include an Original baseline (no imbalance handling, no calibration) for fair comparison.
+- **Evaluation Layer**: Balanced Accuracy, Cohen's Kappa, Macro F1, High-Risk Recall, per-class metrics, classification reports; per-fold class prevalence logging.
+- **Deferred (moved to later steps)**: Balanced bagging ensembles, business/ordinal thresholds, ordinal cumulative models.
 - **Temporal Integrity**: Preserve original temporal distribution; no synthetic sampling
 - **Multi-Target Analysis**: Test across risk_year1-4 with varying class distributions
 - **Business Focus**: Prioritize high-risk recall (classes 2-3) for business alignment
-- *Goal: Address data imbalance with temporally robust validation and business-optimized thresholds*
+- *Goal: Address data imbalance and probability reliability with a simple, explainable single-model pipeline*
 
 ### **Phase 5: Model Architecture Experiments**
 
-**Step 7: Model Architecture Experiments**
-- **Phase 1 - Unified vs. Individual Models**: Compare unified configuration (one shared configuration across all targets) vs. individual configurations (per-target configuration). Both use Step 6 handling so only architecture/config changes are compared.
-- **Phase 2 - Two-Stage Cascade Model**: High-risk Gate (2/3 vs 0/1) + Specialist (2 vs 3) with calibrated thresholds
+**Step 7: Model Architecture Experiments (Two-Phase)**
+- **Phase 1 - Unified vs Individual Models**: Compare a unified configuration (one shared model across all four targets using a `task_id` feature) versus individual configurations (one model per target). Both arms reuse Step 6 handling (class-balanced sample weights; optional training-only calibration) and are evaluated with the same rolling window folds.
+- **Phase 2 - Best-of-Phase1 vs Ordinal Method (Interpretable)**: For each target, compare the winner from Phase 1 against an interpretable ordinal process (single regressor on labels {0,1,2,3} with class-balanced weights; three fixed cutpoints learned on training-only OOF). No test-time label usage.
 - **Use Optimized Features**: From Step 4 results
 - **Use Rolling Window CV**: From Step 5 for temporal robustness
-- **Ordinal Alternative**: From Step 6
+- **Algorithm-Level Reweighting**: From Step 6
 - **Evaluation Metrics**: High-risk Recall (primary), F1-macro, Balanced Accuracy, Cohen's Kappa, High-risk PR-AUC, ECE, Stability (mean F1 − std F1)
 - **Sparse Targets Handling**: Adapt window size/folds for very sparse targets to ensure valid folds
 - **Efficient Training**: Reuse results from previous phases to avoid duplicate training
-- *Goal: Find optimal model architecture with comprehensive optimal setup*
+- *Goal: Decide architecture (Unified vs Individual) and assess value of an interpretable ordinal alternative per target*
 
 ### **Phase 6: Model Optimization**
 
@@ -82,7 +81,7 @@
 - Define search space based on selected architecture (Step 7)
 - Use selected temporal validation strategy (Step 5)
 - Optimize for high-risk recall
-- **Use Two stage cascade**: From Step 7 results
+- **Use Unified model**: From Step 7 results
 - **Use Optimized Features**: From Step 4 results
 - **Use Rolling Window CV**: From Step 5 results
 - **Use Ordinal cumulative**: From Step 6 results
