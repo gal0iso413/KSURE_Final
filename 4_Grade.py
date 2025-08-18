@@ -59,7 +59,7 @@ class GradingConfig:
     dataset_path: str = "dataset/credit_risk_dataset_step4.csv"
     predictions_path: str = "result/predictions/yearly_multiclass_proba.csv"
     output_dir: str = "result/step10_grading"
-    weights: Tuple[float, float, float, float] = (0.4, 0.3, 0.2, 0.1)
+    weights: Tuple[float, float, float, float] = (0.25, 0.25, 0.25, 0.25)
     epsilon: float = 1e-6
     target_num_grades: int = 7
     grade_labels: Optional[List[str]] = None  # default derived if None
@@ -161,12 +161,56 @@ def validate_predictions(preds: pd.DataFrame, cfg: GradingConfig) -> None:
         raise ValueError(f"Predictions file missing required columns: {missing}")
     if cfg.key_column not in preds.columns:
         raise ValueError(f"Predictions file missing key column: {cfg.key_column}")
+    
+    # Additional validation for composite key approach
+    if cfg.date_column in preds.columns:
+        # Check for potential composite key conflicts
+        composite_key = preds[cfg.key_column].astype(str) + '_' + preds[cfg.date_column].astype(str)
+        composite_duplicates = composite_key.duplicated(keep=False)
+        if composite_duplicates.any():
+            print(f"Warning: Composite key duplicates found. Will use row index suffix for {composite_duplicates.sum()} rows.")
+
+
+def validate_data_integrity(df: pd.DataFrame, preds: pd.DataFrame, cfg: GradingConfig) -> bool:
+    """Validate data integrity for composite key approach"""
+    # Check for required columns
+    if cfg.key_column not in df.columns or cfg.key_column not in preds.columns:
+        return False
+    
+    # Check for required prediction columns
+    pred_cols = [f'proba_y{t}_{k}' for t in range(1,5) for k in range(4)]
+    if not all(col in preds.columns for col in pred_cols):
+        return False
+    
+    return True
 
 
 def join_dataset_predictions(df: pd.DataFrame, preds: pd.DataFrame, cfg: GradingConfig) -> pd.DataFrame:
     if cfg.key_column not in df.columns:
         raise ValueError(f"Dataset missing key column: {cfg.key_column}")
-    merged = pd.merge(df, preds, on=cfg.key_column, how="inner", suffixes=("", "_pred"))
+    
+    # Check for duplicates in key column
+    df_duplicates = df[cfg.key_column].duplicated(keep=False)
+    preds_duplicates = preds[cfg.key_column].duplicated(keep=False)
+    
+    if df_duplicates.any() or preds_duplicates.any():
+        print(f"Warning: Duplicates found in {cfg.key_column}. Using composite key approach.")
+        
+        # Create composite key with date if available
+        if cfg.date_column in df.columns and cfg.date_column in preds.columns:
+            df['temp_key'] = df[cfg.key_column].astype(str) + '_' + df[cfg.date_column].astype(str)
+            preds['temp_key'] = preds[cfg.key_column].astype(str) + '_' + preds[cfg.date_column].astype(str)
+        else:
+            # Fallback: add row index suffix for duplicates
+            df['temp_key'] = df[cfg.key_column].astype(str) + '_' + df.index.astype(str)
+            preds['temp_key'] = preds[cfg.key_column].astype(str) + '_' + preds.index.astype(str)
+        
+        merged = pd.merge(df, preds, on='temp_key', how="inner", suffixes=("", "_pred"))
+        merged = merged.drop('temp_key', axis=1)
+    else:
+        # Original approach when no duplicates
+        merged = pd.merge(df, preds, on=cfg.key_column, how="inner", suffixes=("", "_pred"))
+    
     return merged
 
 
@@ -566,10 +610,23 @@ def main():
     # Read
     df, preds = read_data(cfg)
     validate_predictions(preds, cfg)
+    
+    # Validate data integrity
+    if not validate_data_integrity(df, preds, cfg):
+        raise ValueError("Data integrity validation failed. Check required columns and data format.")
+    
     log_lines.append(f"Dataset rows: {len(df):,}; Predictions rows: {len(preds):,}")
 
     # Join and prepare
     merged = join_dataset_predictions(df, preds, cfg)
+    log_lines.append(f"Joined dataset rows: {len(merged):,}")
+    
+    # Log data integrity information
+    if cfg.key_column in merged.columns:
+        duplicates = merged[cfg.key_column].duplicated(keep=False)
+        if duplicates.any():
+            log_lines.append(f"Note: {duplicates.sum():,} duplicate {cfg.key_column} values handled with composite keys")
+    
     merged = compute_event_flags(merged)
     merged = compute_predicted_classes(merged)
 

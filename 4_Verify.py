@@ -122,9 +122,32 @@ def build_eval_frame(assign: pd.DataFrame, df: pd.DataFrame, cfg: VerifyConfig) 
     if cfg.key_column not in df.columns:
         raise ValueError(f"Dataset missing key column: {cfg.key_column}")
 
-    merged = pd.merge(assign, df[[cfg.key_column, cfg.date_column, "risk_year4"] +
-                                 (["업종코드1"] if "업종코드1" in df.columns else [])],
-                      on=cfg.key_column, how="left")
+    # Check for duplicates and use composite key approach if needed
+    assign_duplicates = assign[cfg.key_column].duplicated(keep=False)
+    df_duplicates = df[cfg.key_column].duplicated(keep=False)
+    
+    if assign_duplicates.any() or df_duplicates.any():
+        print(f"Warning: Duplicates found in validation data. Using composite key approach.")
+        
+        # Create composite key with date if available
+        if cfg.date_column in assign.columns and cfg.date_column in df.columns:
+            assign['temp_key'] = assign[cfg.key_column].astype(str) + '_' + assign[cfg.date_column].astype(str)
+            df['temp_key'] = df[cfg.key_column].astype(str) + '_' + df[cfg.date_column].astype(str)
+        else:
+            # Fallback: add row index suffix for duplicates
+            assign['temp_key'] = assign[cfg.key_column].astype(str) + '_' + assign.index.astype(str)
+            df['temp_key'] = df[cfg.key_column].astype(str) + '_' + df.index.astype(str)
+        
+        merged = pd.merge(assign, df[[cfg.key_column, cfg.date_column, "risk_year4"] +
+                                     (["업종코드1"] if "업종코드1" in df.columns else []) + ["temp_key"]],
+                          on='temp_key', how="left", suffixes=("", "_df"))
+        merged = merged.drop('temp_key', axis=1)
+    else:
+        # Original approach when no duplicates
+        merged = pd.merge(assign, df[[cfg.key_column, cfg.date_column, "risk_year4"] +
+                                     (["업종코드1"] if "업종코드1" in df.columns else [])],
+                          on=cfg.key_column, how="left")
+    
     merged["event_4y"] = np.where(~pd.isna(merged["risk_year4"]) & (merged["risk_year4"] >= 1), 1, np.where(~pd.isna(merged["risk_year4"]), 0, np.nan))
 
     # Split into dev and oot

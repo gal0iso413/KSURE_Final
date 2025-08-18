@@ -59,7 +59,7 @@ class Step9Config:
     dataset_path: str = "dataset/credit_risk_dataset_step4.csv"
     predictions_path: str = "result/predictions/yearly_multiclass_proba.csv"
     output_dir: str = "result/step9_post"
-    best_params_dir: str = "result/step8_optuna"
+    best_params_dir: str = "result/step8_optuna2"
     arch: str = "individual"  # individual|unified
     oot_frac: float = 0.2  # last fraction by 보험청약일자 for quick OOT sanity check
     shap_sample_size: int = 0  # 0 disables; else sample up to N rows per target for contribs
@@ -154,7 +154,7 @@ def detect_best_params(cfg: Step9Config) -> Tuple[str, Dict[str, dict], Dict[str
 
     raise FileNotFoundError(
         "Could not find Step 8 best-params file. Expected one of: "
-        "step8_best_params_individual(.json|_gpu.json) or step8_best_params_unified(.json|_gpu.json) in result/step8_optuna"
+        "step8_best_params_individual(.json|_gpu.json) or step8_best_params_unified(.json|_gpu.json) in result/step8_optuna2"
     )
 
 
@@ -302,7 +302,7 @@ def main():
     parser.add_argument("--dataset_path", type=str, default="dataset/credit_risk_dataset_step4.csv")
     parser.add_argument("--predictions_path", type=str, default="result/predictions/yearly_multiclass_proba.csv")
     parser.add_argument("--output_dir", type=str, default="result/step9_post")
-    parser.add_argument("--best_params_dir", type=str, default="result/step8_optuna")
+    parser.add_argument("--best_params_dir", type=str, default="result/step8_optuna2")
     parser.add_argument("--arch", type=str, default="individual", choices=["individual", "unified"])
     parser.add_argument("--oot_frac", type=float, default=0.2)
     parser.add_argument("--shap_sample_size", type=int, default=0)
@@ -581,6 +581,17 @@ def main():
 
     # Save predictions CSV
     preds_df.to_csv(cfg.predictions_path, index=False)
+    
+    # Log data integrity information
+    print(f"Predictions saved with {len(preds_df):,} rows")
+    if cfg.key_column in preds_df.columns:
+        duplicates = preds_df[cfg.key_column].duplicated(keep=False)
+        if duplicates.any():
+            print(f"Warning: {duplicates.sum():,} duplicate {cfg.key_column} values found in predictions")
+            if cfg.date_column in preds_df.columns:
+                composite_duplicates = (preds_df[cfg.key_column].astype(str) + '_' + 
+                                      preds_df[cfg.date_column].astype(str)).duplicated(keep=False)
+                print(f"Composite key duplicates: {composite_duplicates.sum():,}")
 
     # Quick report
     lines: List[str] = []
