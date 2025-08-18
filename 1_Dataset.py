@@ -93,12 +93,12 @@ class DatasetCreator:
             regime_series[mask_pre] = 0
             regime_series[mask_mid] = 1
             regime_series[mask_post] = 2
-            self.base_data['criteria_regime'] = regime_series
+            self.base_data['조기경보선정기준변화'] = regime_series
             
             print(f"📅 Date column: {date_col}")
             print(f"📅 Date range: {self.base_data[date_col].min()} to {self.base_data[date_col].max()}")
             # Regime distribution summary
-            regime_counts = self.base_data['criteria_regime'].value_counts().sort_index()
+            regime_counts = self.base_data['조기경보선정기준변화'].value_counts().sort_index()
             pre_cnt = int(regime_counts.get(0, 0))
             mid_cnt = int(regime_counts.get(1, 0))
             post_cnt = int(regime_counts.get(2, 0))
@@ -173,8 +173,9 @@ class DatasetCreator:
                     prediction_window_end = contract_date + timedelta(days=365 * year)
                     
                     # Check if prediction period has completed (enough time has passed)
-                    # current date = 20250630
-                    current_date = datetime(2025,6,30).date()
+                    # If you want to change the current date, change the date here
+                    # current date = 20250716
+                    current_date = datetime(2025,7,16).date()
                     if isinstance(contract_date, pd.Timestamp):
                         contract_date_only = contract_date.date()
                     else:
@@ -612,11 +613,11 @@ class DatasetCreator:
                     for col in feature_cols:
                         current_val = t0_values.get(col, np.nan)
                         past_val = tk_values.get(col, np.nan)
-                        # Compute rate safely: (current - past) / abs(past)
-                        if pd.isna(current_val) or pd.isna(past_val) or past_val == 0:
+                        # Compute log difference rate safely: log(current / past)
+                        if pd.isna(current_val) or pd.isna(past_val) or past_val <= 0 or current_val <= 0:
                             rate = np.nan
                         else:
-                            rate = (current_val - past_val) / abs(past_val)
+                            rate = np.log(current_val / past_val)
                         rate_col = f"{data_type}_{col}_변화율_{k}{unit_label}"
                         result_df.loc[contract_idx, rate_col] = rate
 
@@ -857,9 +858,9 @@ class DatasetCreator:
         print(f"📊 Total features: {len(df.columns):,}")
         
         # Regime summary
-        if 'criteria_regime' in df.columns:
-            regime_counts = df['criteria_regime'].value_counts().sort_index()
-            print(f"\n🏷️ Criteria Regime Distribution (0=pre-20191112, 1=20191112-20210303, 2=post-20210304): {dict(regime_counts)}")
+        if '조기경보선정기준변화' in df.columns:
+            regime_counts = df['조기경보선정기준변화'].value_counts().sort_index()
+            print(f"\n🏷️ 조기경보선정기준변화 (0=pre-20191112, 1=20191112-20210303, 2=post-20210304): {dict(regime_counts)}")
         
         # Y variable summary
         y_cols = [col for col in df.columns if col.startswith('risk_year')]
@@ -888,7 +889,7 @@ class DatasetCreator:
         high_missing = missing_pct[missing_pct > 10].sort_values(ascending=False)
         if len(high_missing) > 0:
             print(f"   Features with >10% missing: {len(high_missing)}")
-            for col, pct in high_missing.head(10).items():
+            for col, pct in high_missing.head(20).items():
                 print(f"      {col}: {pct}%")
         else:
             print("   ✅ All features have <10% missing data")
@@ -914,13 +915,13 @@ def get_example_config():
         'base_table_path': 'dataset/청약.csv',
         'risk_table_path': 'dataset/조기경보이력_리스크단계.csv',
         'x_variable_paths': {
-            'financial': 'dataset/KED가공재무DATA.csv',
-            'trade': 'dataset/무역통계진흥원수출실적.csv',
-            'grade': 'dataset/KED종합신용정보.csv', 
-            'gdp': 'dataset/gdp_data.csv',
-            'index_trade': 'dataset/trade_data.csv',
-            'index_industry': 'dataset/업종코드_수출자.csv',
-            'index_exchange': 'dataset/exchange_rate_data.csv',
+            '재무정보': 'dataset/KED가공재무DATA.csv',
+            '수출실적': 'dataset/무역통계진흥원수출실적.csv',
+            '신용등급': 'dataset/KED종합신용정보.csv', 
+            'GDP': 'dataset/gdp_data.csv',
+            '총수출': 'dataset/trade_data.csv',
+            '업종': 'dataset/업종코드_수출자.csv',
+            '환변동': 'dataset/exchange_rate_data.csv',
         },
         
         # Table-specific column mappings
@@ -937,31 +938,31 @@ def get_example_config():
                 'risk_level_column': '리스크단계'
             },
             'x_tables': {
-                'financial': {
+                '재무정보': {
                     'date_column': '기준일자',
                     'join_columns': ('사업자등록번호', '사업자등록번호')  # (x_table_column, base_table_column)
                 },
-                'trade': {
+                '수출실적': {
                     'date_column': '기준일자',
                     'join_columns': ('사업자등록번호', '사업자등록번호')  # (x_table_column, base_table_column)
                 },
-                'grade': {
+                '신용등급': {
                     'date_column': '평가일자',
                     'join_columns': ('사업자등록번호', '사업자등록번호')  # (x_table_column, base_table_column)
                 },
-                'gdp': {
+                'GDP': {
                     'date_column': 'date', 
                     # No join_columns specified = market-level data
                 },
-                'index_trade': {
+                '총수출': {
                     'date_column': 'date', 
                     # No join_columns specified = market-level data
                 },
-                'index_industry': {
+                '업종': {
                     'join_columns': ('업종코드', '업종코드1')  # (x_table_column, base_table_column)
                     # No date_column needed for static mode
                 },
-                'index_exchange': {
+                '환변동': {
                     'date_column': 'date', 
                     # No join_columns specified = market-level data
                 }
@@ -970,69 +971,69 @@ def get_example_config():
         
         # Specific columns to include from X variables (if not specified, uses all columns)
         'x_include_columns': {
-            'financial': None,
-            'trade': None,
-            'grade': None, 
-            'gdp': None,
-            'index_trade': None,
-            'index_industry': None,
-            'index_exchange': None,
+            '재무정보': None,
+            '총수출': None,
+            '신용등급': None, 
+            'GDP': None,
+            '총수출': None,
+            '업종': None,
+            '환변동': None,
         },
         
         # Columns to exclude from X variables (applied after include filter)
         'x_exclude_columns': {
-            'financial': [],
-            'trade': [],
-            'grade': ['KED신용등급구분코드'],
-            'gdp': ['quarter'],
-            'index_trade': [],
-            'index_industry': ['중분류','세세분류'],
-            'index_exchange': [],
+            '재무정보': [],
+            '수출실적': [],
+            '신용등급': ['KED신용등급구분코드'],
+            'GDP': ['quarter'],
+            '총수출': [],
+            '업종': ['중분류','세세분류'],
+            '환변동': [],
         },
         
         # Lookback periods for each data type
         'lookback_periods': {
-            'financial': 3,  # 3 periods of financial data
-            'trade': 3,
-            'grade': 1,       # 1 period of grade data
-            'gdp': 1,
-            'index_trade': 1,
-            'index_industry': 1,
-            'index_exchange': 1,
+            '재무정보': 3,  # 3 periods of financial data
+            '수출실적': 3,
+            '신용등급': 1,       # 1 period of grade data
+            'GDP': 1,
+            '총수출': 1,
+            '업종': 1,
+            '환변동': 1,
         },
         
         # Period intervals (how many days between periods)
         'x_period_intervals': {
-            'financial': 'yearly',  # 365 days for quarterly financial reports
-            'trade': 'yearly',
-            'grade': 'yearly',
-            'gdp': 'yearly',
-            'index_trade': 'yearly',
-            'index_industry': 'yearly',
-            'index_exchange': 'yearly',
+            '재무정보': 'yearly',  # 365 days for quarterly financial reports
+            '수출실적': 'yearly',
+            '신용등급': 'yearly',
+            'GDP': 'yearly',
+            '총수출': 'yearly',
+            '업종': 'yearly',
+            '환변동': 'yearly',
             # Options: 'daily'(1), 'weekly'(7), 'monthly'(30), 'quarterly'(90), 'yearly'(365), or integer days
         },
         
         # X variable processing modes
         'x_variable_modes': {
-            'financial': 'lookback',  # Creates: financial_revenue_t0, financial_revenue_t1, ... 
-            'trade': 'lookback',
-            'grade': 'nearest',       # Creates: grade_score_0 (most recent grade)
-            'gdp': 'nearest',
-            'index_trade': 'nearest',
-            'index_industry': 'static',     # Creates: industry_코드, industry_분류명 (no time suffixes)
-            'index_exchange': 'nearest',
+            '재무정보': 'lookback',  # Creates: financial_revenue_t0, financial_revenue_t1, ... 
+            '수출실적': 'lookback',
+            '신용등급': 'nearest',       # Creates: grade_score_0 (most recent grade)
+            'GDP': 'nearest',
+            '총수출': 'nearest',
+            '업종': 'static',     # Creates: industry_코드, industry_분류명 (no time suffixes)
+            '환변동': 'nearest',
         },
         
         # Aggregation methods for X variables (not used for static mode)
         'x_aggregation_methods': {
-            'financial': 'mean',      # Average financial data in each period (smooths outliers)
-            'trade': 'mean',
-            'grade': 'most_recent',   # Most recent grade in each period
-            'gdp': 'mean',
-            'index_trade': 'mean',    
-            # 'index_industry': not needed for static mode
-            'index_exchange': 'mean',
+            '재무정보': 'mean',      # Average financial data in each period (smooths outliers)
+            '수출실적': 'mean',
+            '신용등급': 'most_recent',   # Most recent grade in each period
+            'GDP': 'mean',
+            '총수출': 'mean',    
+            # '업종': not needed for static mode
+            '환변동': 'mean',
         },
         
         # Prediction horizons
@@ -1040,13 +1041,13 @@ def get_example_config():
         
         # Data availability delays (days) - realistic delays for financial data
         'data_availability_delays': {
-            'financial': 45,     # Financial reports: 45 days after quarter/year end
-            'trade': 30,         # Trade statistics: 30 days comprehensive data
-            'grade': 7,          # Credit ratings: 7 days processing delay
-            'gdp': 45,           # GDP data: 45 days after quarter end
-            'index_trade': 30,         # Trade statistics: 30 days comprehensive data
-            'index_industry': 0,       # Industry codes: static/immediate (no delay)
-            'index_exchange': 1,       # Exchange rate data: 1 day after daily data
+            '재무정보': 45,     # Financial reports: 45 days after quarter/year end
+            '수출실적': 30,         # Trade statistics: 30 days comprehensive data
+            '신용등급': 7,          # Credit ratings: 7 days processing delay
+            'GDP': 45,           # GDP data: 45 days after quarter end
+            '총수출': 30,         # Trade statistics: 30 days comprehensive data
+            '업종': 0,       # Industry codes: static/immediate (no delay)
+            '환변동': 1,       # Exchange rate data: 1 day after daily data
         },
         
         # Apply availability delays to make model production-realistic
