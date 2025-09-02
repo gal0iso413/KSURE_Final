@@ -78,9 +78,7 @@ def load_data():
     
     # Define exclude columns (matching step3.py)
     exclude_cols = [
-        '사업자등록번호', '대상자명', '대상자등록이력일시', '대상자기본주소',
-        '청약번호', '보험청약일자', '청약상태코드', '수출자대상자번호', 
-        '특별출연협약코드', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
     ]
     
     # Separate features and targets
@@ -142,6 +140,14 @@ def step1_remove_high_correlation(X, threshold=0.9):
     print(f"✅ Removed {len(to_drop)} highly correlated features")
     print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
     
+    # Show removed columns
+    if to_drop:
+        print(f"   🗑️ Removed columns:")
+        for i, col in enumerate(to_drop, 1):
+            print(f"      {i:2d}. {col}")
+    else:
+        print("   ✅ No highly correlated columns found")
+    
     return X_reduced
 
 def step2_remove_low_variance(X, threshold=0.001):
@@ -167,6 +173,9 @@ def step2_remove_low_variance(X, threshold=0.001):
         X_numeric_filtered = selector.fit_transform(X_numeric)
         selected_numeric_cols = X_numeric.columns[selector.get_support()].tolist()
         
+        # Find removed columns
+        removed_numeric_cols = [col for col in numeric_cols if col not in selected_numeric_cols]
+        
         # Combine selected numeric + all non-numeric columns
         final_cols = selected_numeric_cols + list(non_numeric_cols)
         X_reduced = X[final_cols]
@@ -174,6 +183,14 @@ def step2_remove_low_variance(X, threshold=0.001):
         removed_count = len(numeric_cols) - len(selected_numeric_cols)
         print(f"✅ Removed {removed_count} low variance features")
         print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
+        
+        # Show removed columns
+        if removed_numeric_cols:
+            print(f"   🗑️ Removed columns:")
+            for i, col in enumerate(removed_numeric_cols, 1):
+                print(f"      {i:2d}. {col}")
+        else:
+            print("   ✅ No low variance columns found")
         
         return X_reduced
         
@@ -199,6 +216,15 @@ def step3_remove_high_missing(X, threshold=0.5):
     
     print(f"✅ Removed {len(to_remove)} high missing features")
     print(f"   Features: {initial_features} → {len(X_reduced.columns)}")
+    
+    # Show removed columns with their missing percentages
+    if to_remove:
+        print(f"   🗑️ Removed columns (with missing %):")
+        for i, col in enumerate(to_remove, 1):
+            missing_pct = missing_percentages[col] * 100
+            print(f"      {i:2d}. {col} ({missing_pct:.1f}% missing)")
+    else:
+        print("   ✅ No high missing columns found")
     
     return X_reduced
 
@@ -318,10 +344,22 @@ def step4_xgboost_top_percent_grid(X, y, candidate_percents=None):
     final_cols = selected_numeric + non_numeric_cols
     X_reduced = X[final_cols]
 
+    # Find removed columns
+    removed_numeric_cols = [col for col in numeric_cols if col not in selected_numeric]
+    
     print("   Average F1 by percent:")
     for pct in candidate_percents:
         print(f"     - {pct:>3}%: {avg_f1.get(pct, 0.0):.4f} (from {len(f1_per_percent[pct])} targets)")
     print(f"✅ Selected top-{best_percent}% features (k={best_k}) averaged across {valid_targets} targets")
+    
+    # Show removed columns
+    if removed_numeric_cols:
+        print(f"   🗑️ Removed columns:")
+        for i, col in enumerate(removed_numeric_cols, 1):
+            print(f"      {i:2d}. {col}")
+    else:
+        print("   ✅ No columns removed by XGBoost importance")
+    
     return X_reduced
 
 def create_visualizations(X_original, X_reduced, y, results_dir):
@@ -510,7 +548,7 @@ def create_confusion_matrix_comparison(y_true, y_pred_orig, y_pred_red, results_
     plt.savefig(f'{results_dir}/step4_confusion_matrix_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_outside_exclude):
+def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_outside_exclude, removal_details=None):
     """Save results and create complete dataset"""
     print(f"\n💾 Saving Results")
     print("-" * 30)
@@ -524,6 +562,12 @@ def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_
         f'{results_dir}/step4_selected_features.csv', 
         index=False
     )
+    
+    # Save removal details if provided
+    if removal_details:
+        removal_df = pd.DataFrame(removal_details)
+        removal_df.to_csv(f'{results_dir}/step4_removed_features.csv', index=False)
+        print(f"📄 Removed features details saved to: {results_dir}/step4_removed_features.csv")
     
     # Create complete dataset: excluded columns + selected features + targets
     excluded_data = df_original[exclude_cols].copy()
@@ -587,32 +631,74 @@ def main(
     print("=" * 50)
     print(f"📊 Starting features: {len(X.columns)}")
     
+    # Track removal details
+    removal_details = []
+    
     # Step 1: Remove high correlation
+    X_before = X.copy()
     X = step1_remove_high_correlation(X, threshold=corr_threshold)
+    removed_corr = [col for col in X_before.columns if col not in X.columns]
+    for col in removed_corr:
+        removal_details.append({
+            'step': 'Step 1 - High Correlation',
+            'column_name': col,
+            'reason': f'Correlation > {corr_threshold}',
+            'threshold': corr_threshold
+        })
     
     # Step 2: Remove low variance  
+    X_before = X.copy()
     X = step2_remove_low_variance(X, threshold=variance_threshold)
+    removed_var = [col for col in X_before.columns if col not in X.columns]
+    for col in removed_var:
+        removal_details.append({
+            'step': 'Step 2 - Low Variance',
+            'column_name': col,
+            'reason': f'Variance < {variance_threshold}',
+            'threshold': variance_threshold
+        })
     
     # Step 3: Remove high missing
+    X_before = X.copy()
     X = step3_remove_high_missing(X, threshold=missing_threshold)
+    removed_missing = [col for col in X_before.columns if col not in X.columns]
+    for col in removed_missing:
+        removal_details.append({
+            'step': 'Step 3 - High Missing',
+            'column_name': col,
+            'reason': f'Missing > {missing_threshold*100}%',
+            'threshold': missing_threshold
+        })
     
     # Step 4: XGBoost feature importance
+    X_before = X.copy()
     X_final = step4_xgboost_importance(X, y, keep_percentage=keep_percentage)
+    removed_xgb = [col for col in X_before.columns if col not in X_final.columns]
+    for col in removed_xgb:
+        removal_details.append({
+            'step': 'Step 4 - XGBoost Importance',
+            'column_name': col,
+            'reason': f'Not in top {keep_percentage}% by importance',
+            'threshold': keep_percentage
+        })
 
     # Audit non-numeric features outside exclude cols (diagnostics only)
     non_numeric_outside_exclude = audit_non_numeric_columns(X_final, exclude_cols)
     
     # Calculate final stats
     reduction_pct = (1 - len(X_final.columns) / len(X_original.columns)) * 100
+    total_removed = len(X_original.columns) - len(X_final.columns)
     
     print(f"\n✅ REDUCTION COMPLETE!")
     print("=" * 30)
     print(f"📊 Final features: {len(X_final.columns)}")
     print(f"📉 Reduction: {len(X_original.columns)} → {len(X_final.columns)} ({reduction_pct:.1f}% removed)")
+    print(f"🗑️ Total columns removed: {total_removed}")
+    print(f"📋 Remaining columns: {len(X_final.columns)}")
     # Note: No business-logic preservation enforced by design
     
     # Save results and create dataset
-    results_dir = save_results(df, X_final, exclude_cols, target_cols, non_numeric_outside_exclude)
+    results_dir = save_results(df, X_final, exclude_cols, target_cols, non_numeric_outside_exclude, removal_details)
     
     # Create comparison visualizations
     create_visualizations(X_original, X_final, y, results_dir)
@@ -622,6 +708,18 @@ def main(
     print("✅ Systematic reduction - multicollinearity eliminated")
     print("✅ XGBoost optimized - performance validated") 
     print(f"✅ Results saved in: {results_dir}")
+    
+    # Print summary of removals by step
+    if removal_details:
+        print(f"\n📋 REMOVAL SUMMARY BY STEP:")
+        print("-" * 40)
+        step_counts = {}
+        for detail in removal_details:
+            step = detail['step']
+            step_counts[step] = step_counts.get(step, 0) + 1
+        
+        for step, count in step_counts.items():
+            print(f"   {step}: {count} columns removed")
     
     return X_final
 

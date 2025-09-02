@@ -96,9 +96,7 @@ def load_and_prepare_step4_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
         print("⚠️ 보험청약일자 not found - using index order for temporal validation")
 
     exclude_cols = [
-        '사업자등록번호', '대상자명', '대상자등록이력일시', '대상자기본주소',
-        '청약번호', '보험청약일자', '청약상태코드', '수출자대상자번호',
-        '특별출연협약코드', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
     ]
 
     target_cols = [c for c in df.columns if c.startswith('risk_year')]

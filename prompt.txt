@@ -52,15 +52,14 @@
 **Step 6: Class Imbalance Strategy**
 - **Apply to Optimized Features**: Use best feature set from Step 4 (27 features)
 - **Use Rolling Window CV**: From Step 5 for temporal robustness
-- **Phase 1 - Algorithm-Level Reweighting**: Class-balanced sample weights (e.g., sklearn 'balanced'). Single XGBoost model; predictions via argmax.
-- **Phase 2 - Calibration (Training-only)**: Calibrate probabilities (e.g., Platt/temperature) using only training data (held-out slice or OOF). Predictions via argmax. No threshold search.
-- **Baselines**: Include an Original baseline (no imbalance handling, no calibration) for fair comparison.
+- **Algorithm-Level Reweighting**: Class-balanced sample weights (e.g., sklearn 'balanced'). Single XGBoost model; predictions via argmax.
+- **Baselines**: Include an Original baseline (no imbalance handling) for fair comparison.
 - **Evaluation Layer**: Balanced Accuracy, Cohen's Kappa, Macro F1, High-Risk Recall, per-class metrics, classification reports; per-fold class prevalence logging.
-- **Deferred (moved to later steps)**: Balanced bagging ensembles, business/ordinal thresholds, ordinal cumulative models.
+- **Deferred (moved to later steps)**: Balanced bagging ensembles, business/ordinal thresholds, ordinal cumulative models, probability calibration, data-level oversampling (SMOTE).
 - **Temporal Integrity**: Preserve original temporal distribution; no synthetic sampling
 - **Multi-Target Analysis**: Test across risk_year1-4 with varying class distributions
 - **Business Focus**: Prioritize high-risk recall (classes 2-3) for business alignment
-- *Goal: Address data imbalance and probability reliability with a simple, explainable single-model pipeline*
+- *Goal: Address data imbalance with simple, explainable single-model pipeline focusing on classification accuracy*
 
 ### **Phase 5: Model Architecture Experiments**
 

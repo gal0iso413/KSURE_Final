@@ -749,13 +749,9 @@ def get_step2_config():
         'exclude_columns': [
             '사업자등록번호',
             '대상자명',
-            '대상자등록이력일시',
-            '대상자기본주소',
             '청약번호',
             '보험청약일자',
-            '청약상태코드',
             '수출자대상자번호',
-            '특별출연협약코드',
             '업종코드1'
         ],
         'target_columns': ['risk_year1', 'risk_year2', 'risk_year3', 'risk_year4'],

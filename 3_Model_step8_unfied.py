@@ -57,9 +57,7 @@ def load_step4_data():
     if '보험청약일자' in df.columns:
         df = df.sort_values('보험청약일자').reset_index(drop=True)
     exclude_cols = [
-        '사업자등록번호', '대상자명', '대상자등록이력일시', '대상자기본주소',
-        '청약번호', '보험청약일자', '청약상태코드', '수출자대상자번호',
-        '특별출연협약코드', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
     ]
     target_cols = [c for c in df.columns if c.startswith('risk_year')]
     feature_cols = [c for c in df.columns if c not in exclude_cols + target_cols]

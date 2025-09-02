@@ -74,8 +74,8 @@ def date_to_quarter(date):
     return f"{date.year}Q{quarter}"
 
 def collect_gdp_data():
-    """Collect GDP Growth Rate data (log YoY and QoQ)"""
-    print("\n1️⃣ GDP GROWTH RATE (LOG)")
+    """Collect GDP Growth Rate data with 2-track approach (current state + trend)"""
+    print("\n1️⃣ GDP GROWTH RATE (2-TRACK: CURRENT + TREND)")
     print("-" * 40)
     
     print("📈 Collecting GDP growth rates from ECOS...")
@@ -127,17 +127,17 @@ def collect_gdp_data():
     gdp_data = pd.merge(gdp_yoy_df, gdp_qoq_df, on='date', how='outer')
     gdp_data = gdp_data.sort_values('date').reset_index(drop=True)
 
-    # Add log-change variants of YoY/QoQ (100 * ln(1 + r))
-    # Safe computation: invalid when (1 + r/100) <= 0 → set NaN
-    yoy_base = 1 + (gdp_data['gdp_growth_rate_yoy'] / 100.0)
-    qoq_base = 1 + (gdp_data['gdp_growth_rate_qoq'] / 100.0)
-    gdp_data['성장률_전년동기'] = np.where(yoy_base > 0, np.log(yoy_base) * 100, np.nan).round(2)
-    gdp_data['성장률_전분기'] = np.where(qoq_base > 0, np.log(qoq_base) * 100, np.nan).round(2)
+    # Create 2-track GDP features: current state + trend
+    # Track 1: Current quarterly growth rate (most recent value)
+    gdp_data['GDP_성장률_분기'] = gdp_data['gdp_growth_rate_qoq']
     
-    # Keep only log outputs
-    gdp_data = gdp_data[['date', 'quarter', '성장률_전년동기', '성장률_전분기']]
+    # Track 2: Annual trend (4-quarter moving average of YoY growth)
+    gdp_data['GDP_성장률_연간추세'] = gdp_data['gdp_growth_rate_yoy'].rolling(window=4, min_periods=1).mean()
+    
+    # Keep only 2-track outputs
+    gdp_data = gdp_data[['date', 'quarter', 'GDP_성장률_분기', 'GDP_성장률_연간추세']]
 
-    print(f"✅ GDP data collected: {len(gdp_data)} quarters with YoY/QoQ LOG rates")
+    print(f"✅ GDP data collected: {len(gdp_data)} quarters with 2-track features (current + trend)")
     
     # change YYYY-MM-DD to YYYYMMDD
     gdp_data['date'] = gdp_data['date'].dt.strftime('%Y%m%d')
@@ -147,8 +147,8 @@ def collect_gdp_data():
 
 
 def collect_trade_data():
-    """Collect Export data with multiple frequency LOG growth rates (MoM, QoQ, YoY)"""
-    print("\n2️⃣ NATIONAL TRADE INDICATORS (LOG)")
+    """Collect Export data with multiple frequency normal past-present change growth rates (MoM, QoQ, YoY)"""
+    print("\n2️⃣ NATIONAL TRADE INDICATORS (NORMAL PAST-PRESENT %)")
     print("-" * 40)
     
     print("📦 Collecting trade data from ECOS...")
@@ -178,22 +178,24 @@ def collect_trade_data():
     # Sort by date
     trade_data = export_df.sort_values('date')
     
-    # Multi-frequency export growth rates (log-only)
-    trade_data['증감률_전년동기'] = (np.log(trade_data['export_value']) - np.log(trade_data['export_value'].shift(12))) * 100
-    trade_data['증감률_전분기'] = (np.log(trade_data['export_value']) - np.log(trade_data['export_value'].shift(3))) * 100
-    trade_data['증감률_전월'] = (np.log(trade_data['export_value']) - np.log(trade_data['export_value'].shift(1))) * 100
-    trade_data[['증감률_전년동기','증감률_전분기','증감률_전월']] = \
-        trade_data[['증감률_전년동기','증감률_전분기','증감률_전월']].round(2)
+    # Multi-frequency export growth rates (normal past-present change)
+    # Formula: (current - past) / past
+    trade_data['증감률_전년동기'] = (trade_data['export_value'] - trade_data['export_value'].shift(12)) / \
+                                 trade_data['export_value'].shift(12)
+    trade_data['증감률_전분기'] = (trade_data['export_value'] - trade_data['export_value'].shift(3)) / \
+                                 trade_data['export_value'].shift(3)
+    trade_data['증감률_전월'] = (trade_data['export_value'] - trade_data['export_value'].shift(1)) / \
+                                 trade_data['export_value'].shift(1)
     
-    # Keep log-only features
+    # Keep normal past-present change features
     feature_columns = [
         '증감률_전년동기', '증감률_전분기', '증감률_전월'
     ]
     trade_data = trade_data[['date'] + feature_columns]
     trade_data = trade_data.sort_values('date').reset_index(drop=True)
     
-    print(f"✅ Trade data collected: {len(trade_data)} months with YoY/QoQ/MoM LOG features")
-    print(f"   📊 Export features: log growth rates")
+    print(f"✅ Trade data collected: {len(trade_data)} months with YoY/QoQ/MoM normal past-present change features")
+    print(f"   📊 Export features: normal past-present change growth rates")
     
     # change YYYY-MM-DD to YYYYMMDD
     trade_data['date'] = trade_data['date'].dt.strftime('%Y%m%d')
@@ -203,11 +205,11 @@ def collect_trade_data():
 
 
 def collect_exchange_rate_data():
-    """Collect Exchange Rate data (USD, CNY) daily with log MoM, QoQ, YoY fluctuations.
-    MoM/QoQ/YoY fluctuation is computed as the log difference between the max and min rate
+    """Collect Exchange Rate data (USD, CNY) daily with rolling standard deviation volatility MoM, QoQ, YoY.
+    MoM/QoQ/YoY volatility is computed as the natural coefficient of variation (std/mean)
     over the trailing 1/3/12 calendar months.
     """
-    print("\n3️⃣ EXCHANGE RATES (USD, CNY) - DAILY (LOG-FLUCTUATION)")
+    print("\n3️⃣ EXCHANGE RATES (USD, CNY) - DAILY (ROLLING STD VOLATILITY)")
     print("-" * 40)
 
     print("💱 Collecting exchange rates from ECOS (daily)...")
@@ -258,8 +260,8 @@ def collect_exchange_rate_data():
 
     fx = merged.sort_values('date').reset_index(drop=True)
 
-    # Helper to compute log fluctuation (max-min) vs calendar offset
-    def log_fluctuation_vs_offset(level_series: pd.Series, dates: pd.Series, offset: pd.DateOffset) -> pd.Series:
+    # Helper to compute rolling standard deviation volatility vs calendar offset
+    def rolling_volatility_vs_offset(level_series: pd.Series, dates: pd.Series, offset: pd.DateOffset) -> pd.Series:
         # Combine dates and values into a single DataFrame with a DatetimeIndex for efficient slicing
         indexed_series = level_series.copy()
         indexed_series.index = dates
@@ -273,36 +275,33 @@ def collect_exchange_rate_data():
                 results.append(np.nan)
                 continue
             
-            max_val = window_data.max()
-            min_val = window_data.min()
-            
-            # Calculate log fluctuation only if min_val and max_val are positive
-            with np.errstate(divide='ignore', invalid='ignore'):
-                if min_val > 0 and max_val > 0:
-                    fluctuation = (np.log(max_val) - np.log(min_val)) * 100
-                    results.append(fluctuation)
-                else:
-                    results.append(np.nan)
+            # Calculate rolling standard deviation (coefficient of variation)
+            # Formula: std / mean (natural coefficient of variation)
+            if window_data.mean() == 0:
+                volatility = np.nan  # Cannot compute when mean is zero
+            else:
+                volatility = window_data.std() / window_data.mean()
+                results.append(volatility)
         
         # Create a new series with the original index to ensure alignment
-        return pd.Series(results, index=level_series.index).round(2)
+        return pd.Series(results, index=level_series.index)
 
-    # Compute MoM (1M), QoQ (3M), YoY (12M) log fluctuations for each currency
+    # Compute MoM (1M), QoQ (3M), YoY (12M) rolling standard deviation volatility for each currency
     for cur_key, level_col in rate_level_columns.items():
         s = fx[level_col]
         d = fx['date']
-        fx[f'{cur_key}_전월'] = log_fluctuation_vs_offset(s, d, pd.DateOffset(months=1))
-        fx[f'{cur_key}_전분기'] = log_fluctuation_vs_offset(s, d, pd.DateOffset(months=3))
-        fx[f'{cur_key}_전년동기'] = log_fluctuation_vs_offset(s, d, pd.DateOffset(years=1))
+        fx[f'{cur_key}_전월'] = rolling_volatility_vs_offset(s, d, pd.DateOffset(months=1))
+        fx[f'{cur_key}_전분기'] = rolling_volatility_vs_offset(s, d, pd.DateOffset(months=3))
+        fx[f'{cur_key}_전년동기'] = rolling_volatility_vs_offset(s, d, pd.DateOffset(years=1))
 
-    # Keep only derived features and date (log-only)
+    # Keep only derived features and date (rolling standard deviation volatility only)
     feature_columns = [
         '달러_전년동기', '달러_전분기', '달러_전월',
         '위안_전년동기', '위안_전분기', '위안_전월',
     ]
     fx = fx[['date'] + feature_columns].sort_values('date').reset_index(drop=True)
 
-    print(f"✅ Exchange rate data collected: {len(fx)} daily records with YoY/QoQ/MoM LOG fluctuation features per currency")
+    print(f"✅ Exchange rate data collected: {len(fx)} daily records with YoY/QoQ/MoM rolling standard deviation volatility features per currency")
 
     # Format date as YYYYMMDD
     fx['date'] = fx['date'].dt.strftime('%Y%m%d')
@@ -327,13 +326,13 @@ try:
     print("="*60)
 
     print(f"\n✅ GDP Growth Rate: {len(gdp_data):,} records (quarterly)")
-    print(f"   📊 Features: log YoY and log QoQ growth rates")
+    print(f"   📊 Features: 2-track approach (current quarterly + annual trend)")
 
     print(f"\n✅ National Trade Indicators: {len(trade_data):,} records (monthly)")
-    print(f"   📊 Features: export log MoM/QoQ/YoY")
+    print(f"   📊 Features: export normal past-present change MoM/QoQ/YoY")
 
     print(f"\n✅ Exchange Rates: {len(exchange_rate_data):,} records (daily)")
-    print(f"   📊 Features: usd/cny MoM, QoQ, YoY LOG fluctuations")
+    print(f"   📊 Features: usd/cny MoM, QoQ, YoY rolling standard deviation volatility")
 
     print(f"\n🎯 FILES CREATED:")
     print(f"   📁 {Config.OUTPUT_DIR}/gdp_data.csv")
@@ -343,6 +342,7 @@ try:
     print(f"\n⚡ OPTIMIZATION RESULTS:")
     print(f"✅ Focused on YoY changes (most predictive for credit assessment)")
     print(f"✅ Reduced feature count while maintaining predictive power")
+    print(f"✅ Used 2-track approach for GDP (current state + trend) and normal past-present for trade")
 
     print(f"\n🎉 Data collection completed successfully!")
     
@@ -359,7 +359,7 @@ print("\n📋 DATA PREVIEW")
 print("="*60)
 
 print("\n1️⃣ GDP Data (Latest 5 records):")
-print(gdp_data[['date','quarter','성장률_전년동기','성장률_전분기']].tail().to_string(index=False))
+print(gdp_data[['date','quarter','GDP_성장률_분기','GDP_성장률_연간추세']].tail().to_string(index=False))
 
 print("\n2️⃣ National Trade Data (Latest 5 records):")
 print(trade_data[['date','증감률_전년동기','증감률_전분기','증감률_전월']].tail().to_string(index=False))

@@ -3,8 +3,7 @@ XGBoost Risk Prediction Model - Step 6: Class Imbalance Strategy (Simplified)
 ============================================================================
 
 Scope in this simplified Step 6:
-1. Phase 1 - Algorithm-level Reweighting: Class-balanced sample weights on a single XGBoost model; predict via argmax
-2. Phase 2 - Calibration (Training-only): Fit a simple Platt/temperature-like calibrator on a training-only slice; predict via argmax
+1. Algorithm-level Reweighting: Class-balanced sample weights on a single XGBoost model; predict via argmax
 
 Shared Evaluation Layer:
 - Balanced Accuracy, Cohen's Kappa, Macro F1, High-Risk Recall
@@ -13,7 +12,7 @@ Shared Evaluation Layer:
 
 Design Focus:
 - Rolling Window CV for temporal robustness; no synthetic sampling
-- Single-model pipeline for explainability; no ensembles, no ordinal, no thresholds
+- Single-model pipeline for explainability; no ensembles, no ordinal, no thresholds, no calibration
 - Multi-target analysis (risk_year1, risk_year2, risk_year3, risk_year4)
 - Clear, auditable outputs (metrics, prevalence, classification reports, visualizations)
 """
@@ -29,7 +28,6 @@ from sklearn.metrics import (
     balanced_accuracy_score, cohen_kappa_score, classification_report,
     confusion_matrix, precision_recall_fscore_support
 )
-from sklearn.linear_model import LogisticRegression
 from sklearn.utils.class_weight import compute_sample_weight
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -47,8 +45,6 @@ WINDOW_SIZE = 0.6
 N_SPLITS = 5
 N_ESTIMATORS = 200
 RANDOM_STATE = 42
-CALIBRATION_FRAC = 0.1  # Last fraction of training window reserved for calibration
-CALIBRATION_METHOD = 'sigmoid'  # 'sigmoid' (Platt) or 'none'
 EMBARGO_SAMPLES = 0  # Optional gap between train and test to avoid leakage
 
 # Configure Korean font for matplotlib
@@ -102,9 +98,7 @@ def load_step4_data():
         print(f"✅ Data sorted by 보험청약일자 for temporal validation")
     
     exclude_cols = [
-        '사업자등록번호', '대상자명', '대상자등록이력일시', '대상자기본주소',
-        '청약번호', '보험청약일자', '청약상태코드', '수출자대상자번호', 
-        '특별출연협약코드', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
     ]
     
     target_cols = [col for col in df.columns if col.startswith('risk_year')]
@@ -224,31 +218,7 @@ def prior_correction(*args, **kwargs):
     """Deprecated in simplified Step 6."""
     raise NotImplementedError("Prior correction is not used in simplified Step 6")
 
-def fit_platt_scalers(proba: np.ndarray, y_true: np.ndarray) -> list:
-    K = proba.shape[1]
-    scalers = []
-    for k in range(K):
-        lr = LogisticRegression(max_iter=1000, solver='lbfgs')
-        target = (y_true == k).astype(int)
-        X_feat = proba[:, [k]]
-        if target.sum() == 0 or target.sum() == len(target):
-            scalers.append(None)
-            continue
-        lr.fit(X_feat, target)
-        scalers.append(lr)
-    return scalers
 
-def apply_platt_scalers(proba: np.ndarray, scalers: list) -> np.ndarray:
-    K = proba.shape[1]
-    calibrated = np.zeros_like(proba)
-    for k in range(K):
-        if scalers[k] is None:
-            calibrated[:, k] = proba[:, k]
-        else:
-            calibrated[:, k] = scalers[k].predict_proba(proba[:, [k]])[:, 1]
-    calibrated = np.clip(calibrated, 1e-12, 1.0)
-    calibrated /= calibrated.sum(axis=1, keepdims=True)
-    return calibrated
 
 def train_multiclass_ensemble_with_calibration(*args, **kwargs):
     """Deprecated in simplified Step 6."""
@@ -352,8 +322,8 @@ def approach_baseline(X_numeric, y_target, indices_list, target_name):
     }
 
 def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
-    """Phase 1: Algorithm-level reweighting via sample weights"""
-    print(f"\n📊 Phase 1: Class Weights (Balanced sample_weight) for {target_name}")
+    """Algorithm-level reweighting via sample weights"""
+    print(f"\n📊 Algorithm-Level Reweighting (Class-balanced sample weights) for {target_name}")
     print("-" * 60)
     
     metrics_list = []
@@ -377,7 +347,7 @@ def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
         if len(y_train_clean) == 0 or len(y_test_clean) == 0:
             continue
         
-        # Phase 1: Class-balanced sample weights
+        # Class-balanced sample weights
         sample_weights = compute_sample_weight('balanced', y=y_train_clean)
         
         model = xgb.XGBClassifier(
@@ -420,7 +390,7 @@ def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
     print(f"   ⚖️  Average Balanced Accuracy: {avg_metrics['balanced_accuracy']:.4f}")
     
     return {
-        'approach': 'Phase 1 - Class Weights',
+        'approach': 'Algorithm-Level Reweighting',
         'description': 'Algorithm-level imbalance handling using class-balanced sample weights',
         'metrics': avg_metrics,
         'fold_metrics': metrics_list,
@@ -431,100 +401,7 @@ def approach_sample_weights(X_numeric, y_target, indices_list, target_name):
         'all_probabilities': all_probabilities
     }
 
-def approach_calibrated_weights(X_numeric, y_target, indices_list, target_name):
-    """Phase 2: Calibration on training-only split, built on Phase 1 class weights"""
-    print(f"\n📊 Phase 2: Calibrated Weights (Training-only calibration) for {target_name}")
-    print("-" * 60)
-    
-    metrics_list = []
-    all_true_values = []
-    all_predictions = []
-    all_probabilities = []
-    
-    for fold, (train_idx, test_idx) in enumerate(indices_list):
-        X_train, X_test = X_numeric.iloc[train_idx], X_numeric.iloc[test_idx]
-        y_train, y_test = y_target.iloc[train_idx], y_target.iloc[test_idx]
-        
-        # Filter out NaN values
-        train_mask = ~pd.isna(y_train)
-        test_mask = ~pd.isna(y_test)
-        
-        X_train_clean = X_train[train_mask]
-        y_train_clean = y_train[train_mask].astype(int).values
-        X_test_clean = X_test[test_mask]
-        y_test_clean = y_test[test_mask].astype(int).values
-        
-        if len(y_train_clean) == 0 or len(y_test_clean) == 0:
-            continue
-        
-        # Temporal calibration split within training only
-        n_train_fold = len(X_train_clean)
-        cal_size = int(max(1, n_train_fold * CALIBRATION_FRAC)) if CALIBRATION_FRAC > 0 else 0
-        if cal_size > 0 and cal_size < n_train_fold:
-            X_inner = X_train_clean.iloc[:-cal_size]
-            y_inner = y_train_clean[:-cal_size]
-            X_cal = X_train_clean.iloc[-cal_size:]
-            y_cal = y_train_clean[-cal_size:]
-        else:
-            X_inner, y_inner = X_train_clean, y_train_clean
-            X_cal, y_cal = None, None
 
-        # Phase 1: Class-balanced sample weights on inner-training
-        sample_weights_inner = compute_sample_weight('balanced', y=y_inner)
-        
-        model = xgb.XGBClassifier(
-            n_estimators=N_ESTIMATORS,
-            random_state=RANDOM_STATE,
-            verbosity=0,
-            n_jobs=-1,
-            tree_method='hist',
-            eval_metric='mlogloss'
-        )
-        
-        model.fit(X_inner, y_inner, sample_weight=sample_weights_inner)
-
-        platt_scalers = None
-        if X_cal is not None and len(X_cal) > 0 and CALIBRATION_METHOD == 'sigmoid':
-            proba_cal = model.predict_proba(X_cal)
-            platt_scalers = fit_platt_scalers(proba_cal, y_cal)
-
-        # Predict on test and calibrate
-        proba_test = model.predict_proba(X_test_clean)
-        if platt_scalers is not None:
-            proba_test = apply_platt_scalers(proba_test, platt_scalers)
-
-        y_pred = np.argmax(proba_test, axis=1)
-
-        # Evaluation
-        metrics = calculate_comprehensive_metrics(y_test_clean, y_pred, proba_test)
-        metrics_list.append(metrics)
-        
-        # Store
-        all_true_values.extend(y_test_clean)
-        all_predictions.extend(y_pred)
-        all_probabilities.extend(proba_test)
-        
-        print(f"   Fold {fold+1}: Train={len(X_inner):,} (+Cal={len(X_cal) if X_cal is not None else 0:,}), Test={len(X_test_clean):,}")
-        print(f"      F1-Macro: {metrics['f1_macro']:.4f}, High-Risk Recall: {metrics['high_risk_recall']:.4f}")
-        print(f"      Balanced Accuracy: {metrics['balanced_accuracy']:.4f}, Cohen's Kappa: {metrics['cohen_kappa']:.4f}")
-    
-    if not metrics_list:
-        return None
-    
-    # Averages
-    avg_metrics = {k: np.mean([m[k] for m in metrics_list]) for k in metrics_list[0].keys() if k not in ['per_class', 'classification_report']}
-    
-    return {
-        'approach': 'Phase 2 - Calibrated Weights',
-        'description': 'Phase 1 class weights with training-only probability calibration; argmax decision',
-        'metrics': avg_metrics,
-        'fold_metrics': metrics_list,
-        'n_splits': len(metrics_list),
-        'features': X_numeric.shape[1],
-        'all_true_values': all_true_values,
-        'all_predictions': all_predictions,
-        'all_probabilities': all_probabilities
-    }
 
 def approach_threshold_optimization(*args, **kwargs):
     """Deprecated in simplified Step 6."""
@@ -539,9 +416,9 @@ def create_comprehensive_visualizations(all_results, results_dir):
     
     # 1. Performance Comparison
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    fig.suptitle('Enhanced Class Imbalance Strategy - Performance Comparison', fontsize=16, fontweight='bold')
+    fig.suptitle('Class Imbalance Strategy - Performance Comparison', fontsize=16, fontweight='bold')
     
-    methods = ['Original', 'Phase 1 - Class Weights', 'Phase 2 - Calibrated Weights']
+    methods = ['Original', 'Algorithm-Level Reweighting']
     metrics = ['f1_macro', 'high_risk_recall', 'balanced_accuracy', 'cohen_kappa']
     metric_names = ['F1-Macro', 'High-Risk Recall', 'Balanced Accuracy', "Cohen's Kappa"]
     
@@ -644,8 +521,7 @@ def test_all_methods_for_target(X, y, target_name):
 
     results = {}
     results['Original'] = approach_baseline(X_numeric, y_target, indices_list, target_name)
-    results['Phase 1 - Class Weights'] = approach_sample_weights(X_numeric, y_target, indices_list, target_name)
-    results['Phase 2 - Calibrated Weights'] = approach_calibrated_weights(X_numeric, y_target, indices_list, target_name)
+    results['Algorithm-Level Reweighting'] = approach_sample_weights(X_numeric, y_target, indices_list, target_name)
     
     return results
 
@@ -653,7 +529,7 @@ def select_best_imbalance_method(all_results):
     """Select the best simplified method per target and summarize overall"""
     print(f"\n🎯 SELECTING BEST METHODS (Per Target)")
     print("-" * 60)
-    methods = ['Original', 'Phase 1 - Class Weights', 'Phase 2 - Calibrated Weights']
+    methods = ['Original', 'Algorithm-Level Reweighting']
     method_scores_overall = {m: [] for m in methods}
     per_target_best = {}
 
@@ -705,9 +581,8 @@ def save_enhanced_results(all_results, best_selection, results_dir):
         'per_target_best': best_selection['per_target_best'],
         'method_summary': best_selection['method_summary'],
         'key_improvements': {
-            'phase_1': 'Algorithm-level reweighting (class-balanced sample weights)',
-            'phase_2': 'Calibration on training-only split (Platt/temperature); argmax decision',
-            'deferred': 'Ensembles, business thresholds, and ordinal cumulative moved to later steps'
+            'algorithm_reweighting': 'Algorithm-level reweighting (class-balanced sample weights)',
+            'deferred': 'Ensembles, business thresholds, ordinal cumulative, probability calibration, and data-level oversampling (SMOTE) moved to later steps'
         }
     }
     
@@ -730,8 +605,7 @@ def main():
     print(f"📈 Features: {X.shape[1]}")
     print(f"📅 Using Rolling Window CV for temporal robustness")
     print(f"🛡️ No synthetic sampling; single-model pipeline only")
-    print(f"⚖️  Phase 1: Class-balanced sample weights (argmax)")
-    print(f"🎚️ Phase 2: Training-only calibration on probabilities (argmax)")
+    print(f"⚖️  Algorithm-level reweighting: Class-balanced sample weights (argmax)")
 
     all_results = {}
 

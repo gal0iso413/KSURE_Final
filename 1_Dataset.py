@@ -613,11 +613,16 @@ class DatasetCreator:
                     for col in feature_cols:
                         current_val = t0_values.get(col, np.nan)
                         past_val = tk_values.get(col, np.nan)
-                        # Compute log difference rate safely: log(current / past)
-                        if pd.isna(current_val) or pd.isna(past_val) or past_val <= 0 or current_val <= 0:
+                        
+                        # Compute symmetric percentage change: (current - past) / ((|current| + |past|) / 2)
+                        if pd.isna(current_val) or pd.isna(past_val):
                             rate = np.nan
+                        elif current_val == 0 and past_val == 0:
+                            rate = 0.0  # No change when both values are zero
                         else:
-                            rate = np.log(current_val / past_val)
+                            # Symmetric percentage change formula
+                            rate = (current_val - past_val) / ((abs(current_val) + abs(past_val)) / 2)
+                        
                         rate_col = f"{data_type}_{col}_변화율_{k}{unit_label}"
                         result_df.loc[contract_idx, rate_col] = rate
 
@@ -916,7 +921,7 @@ def get_example_config():
         'risk_table_path': 'dataset/조기경보이력_리스크단계.csv',
         'x_variable_paths': {
             '재무정보': 'dataset/KED가공재무DATA.csv',
-            '수출실적': 'dataset/무역통계진흥원수출실적.csv',
+            '수출실적': 'dataset/무역통계진흥원수출입실적.csv',
             '신용등급': 'dataset/KED종합신용정보.csv', 
             'GDP': 'dataset/gdp_data.csv',
             '총수출': 'dataset/trade_data.csv',
@@ -984,7 +989,7 @@ def get_example_config():
         'x_exclude_columns': {
             '재무정보': [],
             '수출실적': [],
-            '신용등급': ['KED신용등급구분코드'],
+            '신용등급': [],
             'GDP': ['quarter'],
             '총수출': [],
             '업종': ['중분류','세세분류'],
@@ -1025,6 +1030,8 @@ def get_example_config():
             '환변동': 'nearest',
         },
         
+
+        
         # Aggregation methods for X variables (not used for static mode)
         'x_aggregation_methods': {
             '재무정보': 'mean',      # Average financial data in each period (smooths outliers)
@@ -1051,7 +1058,7 @@ def get_example_config():
         },
         
         # Apply availability delays to make model production-realistic
-        'apply_availability_delays': True,
+        'apply_availability_delays': False,
         
         # Additional safety margin for data processing/transmission delays
         'safety_margin_days': 7,  # Extra 7 days buffer for real-world conditions
