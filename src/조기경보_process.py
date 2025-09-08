@@ -15,6 +15,7 @@ import os
 import warnings
 from datetime import datetime
 import logging
+from typing import Dict, Any
 
 # Configure logging
 logging.basicConfig(
@@ -33,14 +34,14 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 class EarlyWarningProcessor:
     """Process early warning data to create risk stage timeline."""
     
-    def __init__(self, input_path, output_path, ongoing_end_date='2025-07-16'):
+    def __init__(self, input_path: str, output_path: str, ongoing_end_date: str = '2025-07-16') -> None:
         """
         Initialize the processor.
         
         Args:
-            input_path (str): Path to the input CSV file
-            output_path (str): Path to save the output CSV file
-            ongoing_end_date (str): Date to use for ongoing alerts
+            input_path: Path to the input CSV file
+            output_path: Path to save the output CSV file
+            ongoing_end_date: Date to use for ongoing alerts
         """
         self.input_path = input_path
         self.output_path = output_path
@@ -83,7 +84,7 @@ class EarlyWarningProcessor:
             '10': 3, # 채무불이행
         }
     
-    def load_data(self):
+    def load_data(self) -> pd.DataFrame:
         """Load the early warning data from CSV."""
         try:
             logger.info(f"Loading data from {self.input_path}")
@@ -97,7 +98,7 @@ class EarlyWarningProcessor:
             logger.error(f"Error loading data: {e}")
             raise
     
-    def preprocess_data(self, df):
+    def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Preprocess the data by converting date format."""
         logger.info("Preprocessing data...")
         
@@ -110,7 +111,7 @@ class EarlyWarningProcessor:
         logger.info(f"Data preprocessing completed. Date range: {df_sorted['조기경보발생일자'].min()} to {df_sorted['조기경보발생일자'].max()}")
         return df_sorted
     
-    def process_individual_alerts(self, df_sorted):
+    def process_individual_alerts(self, df_sorted: pd.DataFrame) -> pd.DataFrame:
         """Process individual alerts to determine start/end dates and risk stages."""
         logger.info("Processing individual alerts...")
         
@@ -147,7 +148,7 @@ class EarlyWarningProcessor:
         logger.info(f"Processed {len(alarms_df)} individual alerts")
         return alarms_df
     
-    def create_risk_timeline(self, alarms_df):
+    def create_risk_timeline(self, alarms_df: pd.DataFrame) -> pd.DataFrame:
         """Create a timeline of risk states for each person."""
         logger.info("Creating risk timeline...")
         
@@ -194,7 +195,7 @@ class EarlyWarningProcessor:
         logger.info(f"Created timeline with {len(state_df)} state changes")
         return state_df
     
-    def merge_consecutive_periods(self, state_df):
+    def merge_consecutive_periods(self, state_df: pd.DataFrame) -> pd.DataFrame:
         """Merge consecutive periods with the same risk level."""
         logger.info("Merging consecutive periods...")
         
@@ -218,7 +219,7 @@ class EarlyWarningProcessor:
         logger.info(f"Merged into {len(final_result)} final periods")
         return final_result
     
-    def save_result(self, final_result):
+    def save_result(self, final_result: pd.DataFrame) -> None:
         """Save the final result to CSV."""
         try:
             logger.info(f"Saving result to {self.output_path}")
@@ -228,7 +229,7 @@ class EarlyWarningProcessor:
             logger.error(f"Error saving result: {e}")
             raise
     
-    def process(self):
+    def process(self) -> pd.DataFrame:
         """Execute the complete processing pipeline."""
         logger.info("Starting early warning data processing...")
         
@@ -258,10 +259,10 @@ class EarlyWarningProcessor:
             logger.error(f"Processing failed: {e}")
             raise
 
-def main():
+def main() -> None:
     """Main function to run the processing."""
-    # Configuration
-    table_path = r"C:\Users\K_SURE_PROJECT\data_analysis\KSURE_Final\dataset"
+    # Configuration - using relative paths
+    table_path = "../data/raw"
     input_file = "조기경보내역.csv"
     output_file = "조기경보이력_리스크단계.csv"
     
@@ -272,14 +273,15 @@ def main():
     processor = EarlyWarningProcessor(input_path, output_path)
     result = processor.process()
     
-    # Print summary
-    print(f"\nProcessing Summary:")
-    print(f"Input file: {input_path}")
-    print(f"Output file: {output_path}")
-    print(f"Total records processed: {len(result)}")
-    print(f"Unique persons: {result['대상자번호'].nunique()}")
-    print(f"Risk level distribution:")
-    print(result['리스크단계'].value_counts().sort_index())
+    # Log summary
+    logger.info("Processing Summary:")
+    logger.info(f"Input file: {input_path}")
+    logger.info(f"Output file: {output_path}")
+    logger.info(f"Total records processed: {len(result)}")
+    logger.info(f"Unique persons: {result['대상자번호'].nunique()}")
+    logger.info("Risk level distribution:")
+    for level, count in result['리스크단계'].value_counts().sort_index().items():
+        logger.info(f"  Level {level}: {count}")
 
 if __name__ == "__main__":
     main()

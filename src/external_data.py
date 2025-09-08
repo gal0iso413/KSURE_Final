@@ -4,89 +4,95 @@ import numpy as np
 from datetime import datetime, timedelta
 import os
 import warnings
+import logging
+from typing import Optional, Dict, Any
 warnings.filterwarnings('ignore')
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Data collection libraries
 try:
     from PublicDataReader import Ecos
-    print("✅ Libraries imported successfully!")
+    logger.info("Libraries imported successfully!")
 except ImportError as e:
-    print(f"❌ Import error: {e}")
-    print("Please install missing packages using pip install commands above")
+    logger.error(f"Import error: {e}")
+    logger.error("Please install missing packages using pip install commands above")
+    raise
 
 # Configuration
 class Config:
     # API Key (Replace with your actual API key from https://ecos.bok.or.kr)
     ECOS_API_KEY = "X949JPUF94LO6EDI5EM5"  # Get from https://ecos.bok.or.kr
     
-    # Output directory
-    OUTPUT_DIR = "dataset"
+    # Output directory (relative path)
+    OUTPUT_DIR = "../data/raw"
     
-    # Date range (will be set by user input)
-    START_DATE = None
-    END_DATE = None
+    # Default date range (can be overridden)
+    START_DATE = datetime(2020, 1, 1)
+    END_DATE = datetime(2024, 12, 31)
+    
+    @classmethod
+    def set_date_range(cls, start_date: str, end_date: str) -> None:
+        """Set date range from string inputs."""
+        try:
+            cls.START_DATE = datetime.strptime(start_date, "%Y-%m-%d")
+            cls.END_DATE = datetime.strptime(end_date, "%Y-%m-%d")
+            logger.info(f"Date range set: {cls.START_DATE.strftime('%Y-%m-%d')} to {cls.END_DATE.strftime('%Y-%m-%d')}")
+        except ValueError as e:
+            logger.warning(f"Invalid date format: {e}. Using default range: 2020-01-01 to 2024-12-31")
+            cls.START_DATE = datetime(2020, 1, 1)
+            cls.END_DATE = datetime(2024, 12, 31)
 
 # Create output directory
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
-print(f"📁 Output directory: {Config.OUTPUT_DIR}")
-
-# User Input: Date Range
-start_date_str = input("Enter start date (YYYY-MM-DD, e.g., 2020-01-01): ")
-end_date_str = input("Enter end date (YYYY-MM-DD, e.g., 2024-12-31): ")
-
-try:
-    Config.START_DATE = datetime.strptime(start_date_str, "%Y-%m-%d")
-    Config.END_DATE = datetime.strptime(end_date_str, "%Y-%m-%d")
-    print(type(Config.START_DATE))
-    print(f"📅 Date range set: {Config.START_DATE.strftime('%Y-%m-%d')} to {Config.END_DATE.strftime('%Y-%m-%d')}")
-except ValueError:
-    print("⚠️ Invalid date format. Using default range: 2020-01-01 to 2024-12-31")
-    Config.START_DATE = datetime(2020, 1, 1)
-    Config.END_DATE = datetime(2024, 12, 31)
+logger.info(f"Output directory: {Config.OUTPUT_DIR}")
 
 class DataCollector:
     def __init__(self):
-        # Initialize ECOS API only - no simplified versions
+        """Initialize the data collector with ECOS API."""
         try:
             self.ecos_api = Ecos(Config.ECOS_API_KEY)
-            print("✅ ECOS API initialized")
+            logger.info("ECOS API initialized")
         except Exception as e:
-            print(f"❌ ECOS API initialization error: {e}")
+            logger.error(f"ECOS API initialization error: {e}")
             raise ValueError("Valid ECOS API key required for production mode")
     
-    def save_to_csv(self, data, filename):
-        """Save data to CSV file"""
+    def save_to_csv(self, data: pd.DataFrame, filename: str) -> bool:
+        """Save data to CSV file."""
         if data is not None and not data.empty:
             filepath = os.path.join(Config.OUTPUT_DIR, f"{filename}.csv")
             data.to_csv(filepath, index=False, encoding='utf-8-sig')
-            print(f"✅ Saved: {filepath} ({len(data)} rows)")
+            logger.info(f"Saved: {filepath} ({len(data)} rows)")
             return True
         else:
-            print(f"❌ No data to save for {filename}")
+            logger.warning(f"No data to save for {filename}")
             return False
 
 # Initialize collector
 collector = DataCollector()
 
-def date_to_quarter(date):
-    """Convert date to ECOS quarter format (YYYYQX)"""
+def date_to_quarter(date: datetime) -> str:
+    """Convert date to ECOS quarter format (YYYYQX)."""
     quarter = (date.month - 1) // 3 + 1
     return f"{date.year}Q{quarter}"
 
-def collect_gdp_data():
-    """Collect GDP Growth Rate data with 2-track approach (current state + trend)"""
-    print("\n1️⃣ GDP GROWTH RATE (2-TRACK: CURRENT + TREND)")
-    print("-" * 40)
+def collect_gdp_data() -> pd.DataFrame:
+    """Collect GDP Growth Rate data with 2-track approach (current state + trend)."""
+    logger.info("Starting GDP data collection (2-track: current + trend)")
     
-    print("📈 Collecting GDP growth rates from ECOS...")
-    # Properly convert dates to quarter format
+    # Convert dates to quarter format
     start_quarter = date_to_quarter(Config.START_DATE)
     end_quarter = date_to_quarter(Config.END_DATE)
     
-    print(f"   📅 Period: {start_quarter} to {end_quarter}")
+    logger.info(f"Period: {start_quarter} to {end_quarter}")
     
     # GDP Growth Rate YoY (Year-over-Year) - 10121
-    print("   📊 Collecting YoY growth rate...")
+    logger.info("Collecting YoY growth rate...")
     gdp_yoy_raw = collector.ecos_api.get_statistic_search(
         통계표코드="200Y102",
         통계항목코드1="10121", 
@@ -96,7 +102,7 @@ def collect_gdp_data():
     )
     
     # GDP Growth Rate QoQ (Quarter-over-Quarter) - 10111
-    print("   📊 Collecting QoQ growth rate...")
+    logger.info("Collecting QoQ growth rate...")
     gdp_qoq_raw = collector.ecos_api.get_statistic_search(
         통계표코드="200Y102",
         통계항목코드1="10111", 
@@ -137,23 +143,22 @@ def collect_gdp_data():
     # Keep only 2-track outputs
     gdp_data = gdp_data[['date', 'quarter', 'GDP_성장률_분기', 'GDP_성장률_연간추세']]
 
-    print(f"✅ GDP data collected: {len(gdp_data)} quarters with 2-track features (current + trend)")
+    logger.info(f"GDP data collected: {len(gdp_data)} quarters with 2-track features (current + trend)")
     
-    # change YYYY-MM-DD to YYYYMMDD
+    # Change YYYY-MM-DD to YYYYMMDD
     gdp_data['date'] = gdp_data['date'].dt.strftime('%Y%m%d')
 
     collector.save_to_csv(gdp_data, 'gdp_data')
     return gdp_data
 
 
-def collect_trade_data():
-    """Collect Export data with multiple frequency normal past-present change growth rates (MoM, QoQ, YoY)"""
-    print("\n2️⃣ NATIONAL TRADE INDICATORS (NORMAL PAST-PRESENT %)")
-    print("-" * 40)
+def collect_trade_data() -> pd.DataFrame:
+    """Collect Export data with multiple frequency normal past-present change growth rates (MoM, QoQ, YoY)."""
+    logger.info("Starting national trade indicators collection (normal past-present %)")
     
-    print("📦 Collecting trade data from ECOS...")
     start_month = f"{Config.START_DATE.year}{Config.START_DATE.month:02d}"
     end_month = f"{Config.END_DATE.year}{Config.END_DATE.month:02d}"
+    logger.info(f"Collecting trade data from ECOS for period: {start_month} to {end_month}")
     
     # Export Values - USING KOREAN PARAMETER NAMES
     export_raw = collector.ecos_api.get_statistic_search(
@@ -194,27 +199,25 @@ def collect_trade_data():
     trade_data = trade_data[['date'] + feature_columns]
     trade_data = trade_data.sort_values('date').reset_index(drop=True)
     
-    print(f"✅ Trade data collected: {len(trade_data)} months with YoY/QoQ/MoM normal past-present change features")
-    print(f"   📊 Export features: normal past-present change growth rates")
+    logger.info(f"Trade data collected: {len(trade_data)} months with YoY/QoQ/MoM normal past-present change features")
     
-    # change YYYY-MM-DD to YYYYMMDD
+    # Change YYYY-MM-DD to YYYYMMDD
     trade_data['date'] = trade_data['date'].dt.strftime('%Y%m%d')
 
     collector.save_to_csv(trade_data, 'trade_data')
     return trade_data
 
 
-def collect_exchange_rate_data():
+def collect_exchange_rate_data() -> pd.DataFrame:
     """Collect Exchange Rate data (USD, CNY) daily with rolling standard deviation volatility MoM, QoQ, YoY.
     MoM/QoQ/YoY volatility is computed as the natural coefficient of variation (std/mean)
     over the trailing 1/3/12 calendar months.
     """
-    print("\n3️⃣ EXCHANGE RATES (USD, CNY) - DAILY (ROLLING STD VOLATILITY)")
-    print("-" * 40)
+    logger.info("Starting exchange rates collection (USD, CNY) - daily rolling std volatility")
 
-    print("💱 Collecting exchange rates from ECOS (daily)...")
     start_day = Config.START_DATE.strftime('%Y%m%d')
     end_day = Config.END_DATE.strftime('%Y%m%d')
+    logger.info(f"Collecting exchange rates from ECOS for period: {start_day} to {end_day}")
 
     # ECOS: 731Y001 - Exchange rate table (daily)
     currency_item_codes = {
@@ -301,7 +304,7 @@ def collect_exchange_rate_data():
     ]
     fx = fx[['date'] + feature_columns].sort_values('date').reset_index(drop=True)
 
-    print(f"✅ Exchange rate data collected: {len(fx)} daily records with YoY/QoQ/MoM rolling standard deviation volatility features per currency")
+    logger.info(f"Exchange rate data collected: {len(fx)} daily records with YoY/QoQ/MoM rolling standard deviation volatility features per currency")
 
     # Format date as YYYYMMDD
     fx['date'] = fx['date'].dt.strftime('%Y%m%d')
@@ -309,85 +312,50 @@ def collect_exchange_rate_data():
     collector.save_to_csv(fx, 'exchange_rate_data')
     return fx
 
-# Main Data Collection Process
-print("🚀 Starting Korean Economic Data Collection")
-print("="*60)
-print("🎯 Focus: Maximum predictive power, minimum correlation")
-print("="*60)
-
-try:
-    # Collect all datasets
-    gdp_data = collect_gdp_data()
-    trade_data = collect_trade_data()
-    exchange_rate_data = collect_exchange_rate_data()
-
-    print("\n" + "="*60)
-    print("📊 DATA COLLECTION SUMMARY")
-    print("="*60)
-
-    print(f"\n✅ GDP Growth Rate: {len(gdp_data):,} records (quarterly)")
-    print(f"   📊 Features: 2-track approach (current quarterly + annual trend)")
-
-    print(f"\n✅ National Trade Indicators: {len(trade_data):,} records (monthly)")
-    print(f"   📊 Features: export normal past-present change MoM/QoQ/YoY")
-
-    print(f"\n✅ Exchange Rates: {len(exchange_rate_data):,} records (daily)")
-    print(f"   📊 Features: usd/cny MoM, QoQ, YoY rolling standard deviation volatility")
-
-    print(f"\n🎯 FILES CREATED:")
-    print(f"   📁 {Config.OUTPUT_DIR}/gdp_data.csv")
-    print(f"   📁 {Config.OUTPUT_DIR}/trade_data.csv")
-    print(f"   📁 {Config.OUTPUT_DIR}/exchange_rate_data.csv")
-
-    print(f"\n⚡ OPTIMIZATION RESULTS:")
-    print(f"✅ Focused on YoY changes (most predictive for credit assessment)")
-    print(f"✅ Reduced feature count while maintaining predictive power")
-    print(f"✅ Used 2-track approach for GDP (current state + trend) and normal past-present for trade")
-
-    print(f"\n🎉 Data collection completed successfully!")
+def main(start_date: str = "2020-01-01", end_date: str = "2024-12-31") -> None:
+    """Main data collection process."""
+    logger.info("Starting Korean Economic Data Collection")
+    logger.info("Focus: Maximum predictive power, minimum correlation")
     
-except Exception as e:
-    print(f"\n❌ Data collection failed: {e}")
-    print("🔧 Please check:")
-    print("   1. ECOS API key is valid")
-    print("   2. Date range is appropriate")
-    print("   3. Network connection is stable")
-    raise
+    # Set date range
+    Config.set_date_range(start_date, end_date)
+    
+    try:
+        # Collect all datasets
+        gdp_data = collect_gdp_data()
+        trade_data = collect_trade_data()
+        exchange_rate_data = collect_exchange_rate_data()
 
-# Display data preview and usage instructions
-print("\n📋 DATA PREVIEW")
-print("="*60)
+        logger.info("DATA COLLECTION SUMMARY")
+        logger.info(f"GDP Growth Rate: {len(gdp_data):,} records (quarterly)")
+        logger.info(f"National Trade Indicators: {len(trade_data):,} records (monthly)")
+        logger.info(f"Exchange Rates: {len(exchange_rate_data):,} records (daily)")
 
-print("\n1️⃣ GDP Data (Latest 5 records):")
-print(gdp_data[['date','quarter','GDP_성장률_분기','GDP_성장률_연간추세']].tail().to_string(index=False))
+        logger.info("FILES CREATED:")
+        logger.info(f"   {Config.OUTPUT_DIR}/gdp_data.csv")
+        logger.info(f"   {Config.OUTPUT_DIR}/trade_data.csv")
+        logger.info(f"   {Config.OUTPUT_DIR}/exchange_rate_data.csv")
 
-print("\n2️⃣ National Trade Data (Latest 5 records):")
-print(trade_data[['date','증감률_전년동기','증감률_전분기','증감률_전월']].tail().to_string(index=False))
+        logger.info("Data collection completed successfully!")
+        
+    except Exception as e:
+        logger.error(f"Data collection failed: {e}")
+        logger.error("Please check:")
+        logger.error("   1. ECOS API key is valid")
+        logger.error("   2. Date range is appropriate")
+        logger.error("   3. Network connection is stable")
+        raise
 
-print("\n3️⃣ Exchange Rate Data (Latest 5 records):")
-print(exchange_rate_data[['date','달러_전년동기','달러_전분기','달러_전월','위안_전년동기','위안_전분기','위안_전월']].tail().to_string(index=False))
-
-print("\n🎯 FEATURE BENEFITS:")
-print("✅ 성장률_전년동기: 직접적인 경기 상태 지표")
-print("✅ 증감률_전년동기: 수출 의존 경기 지표") 
-print("✅ 달러_전년동기: 환율 안정성 지표")
-
-print("\n📊 DATA QUALITY:")
-print(f"   �� GDP Date Range: {gdp_data['date'].min()} to {gdp_data['date'].max()}")
-print(f"   📅 Trade Date Range: {trade_data['date'].min()} to {trade_data['date'].max()}")
-
-print("\n📖 USAGE EXAMPLE:")
-print("   import pandas as pd")
-print("   ")
-print("   # Load datasets")
-print("   gdp_df = pd.read_csv('dataset/gdp_data.csv')")
-print("   trade_df = pd.read_csv('dataset/trade_data.csv')")
-print("   exchange_df = pd.read_csv('dataset/exchange_rate_data.csv')")
-
-print("\n🚀 NEXT STEPS:")
-print("   1. Merge with company data using date joins")
-print("   2. Apply feature engineering (rolling averages, volatility)")
-print("   3. Deploy in credit assessment model pipeline")
-print("   4. Expected improvement: 15-25% prediction accuracy")
-
-print("\n✅ External data collection completed!")
+if __name__ == "__main__":
+    # Allow command line usage with optional date parameters
+    import sys
+    
+    if len(sys.argv) == 3:
+        start_date = sys.argv[1]
+        end_date = sys.argv[2]
+        main(start_date, end_date)
+    else:
+        # Use default dates
+        main()
+        
+    logger.info("External data collection completed!")

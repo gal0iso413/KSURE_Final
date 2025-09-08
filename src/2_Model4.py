@@ -1,17 +1,22 @@
 """
-Step 5.5: Model Family Comparison (Temporal - Rolling Window)
-=============================================================
+Step 4: Fair Model Family Comparison (Temporal - Rolling Window)
+==================================================================
 
 Goal:
-- Compare XGBoost, RandomForest, MLP, and Logistic Regression between Step 5 and Step 6
-- Use Step 4 dataset (feature-refined) and a unified Rolling Window CV
+- FAIR comparison of XGBoost, RandomForest, MLP, and Logistic Regression
+- ALL models use IDENTICAL preprocessing (no advantage to XGBoost native NaN handling)
+- Use Step 2 dataset (feature-refined) and a unified Rolling Window CV
 - Train individual models per target (risk_year1..risk_year4), same conditions
-- Shared preprocessing for all models to satisfy algorithm requirements
+- Shared preprocessing pipeline ensures scientific validity of comparison
 - Save metrics in a consistent structure for downstream analysis
 
+Key Improvement:
+- XGBoost now uses same preprocessed data as other models (fair comparison)
+- Previous versions gave XGBoost unfair advantage with native missing value handling
+
 Outputs:
-- Per model/target metrics JSON: result/step5.5_model_comparison_temporal/metrics/step5.5_<model>_<target>.json
-- Summary JSON: result/step5.5_model_comparison_temporal/step5.5_summary.json
+- Per model/target metrics JSON: result/step4_model_comparison_temporal/metrics/step4_<model>_<target>.json
+- Summary JSON: result/step4_model_comparison_temporal/step4_summary.json
 """
 
 from __future__ import annotations
@@ -28,6 +33,14 @@ import seaborn as sns
 import matplotlib.font_manager as fm
 import platform
 import warnings
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -78,15 +91,15 @@ sns.set_palette("husl")
 
 
 # ------------------------------------------------------------
-# Data loading (Step 4 dataset) and preparation
+# Data loading (Step 2 dataset) and preparation
 # ------------------------------------------------------------
-def load_and_prepare_step4_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], List[str]]:
+def load_and_prepare_selected_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], List[str]]:
     print("\n🚀 MODEL FAMILY COMPARISON (Rolling Window)\n" + "=" * 60)
-    print("📂 Loading Step 4 Optimized Dataset")
+    print("📂 Loading Step 2 Optimized Dataset")
     print("-" * 40)
 
-    df = pd.read_csv('dataset/credit_risk_dataset_step4.csv')
-    print(f"✅ Step 4 dataset loaded: {df.shape}")
+    df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    print(f"✅ Step 2 dataset loaded: {df.shape}")
 
     # Sort by 보험청약일자 to preserve temporal order
     if '보험청약일자' in df.columns:
@@ -174,7 +187,15 @@ def build_preprocessor(
 # ------------------------------------------------------------
 def get_models(random_state: int = 42) -> Dict[str, object]:
     models: Dict[str, object] = {
-        # Use sklearn defaults for fair baseline
+        # All models use identical preprocessing - FAIR COMPARISON
+        'xgboost': xgb.XGBClassifier(
+            n_estimators=100,
+            random_state=random_state,
+            verbosity=0,
+            n_jobs=-1,
+            tree_method='hist',
+            eval_metric='mlogloss'
+        ),
         'random_forest': RandomForestClassifier(
             n_estimators=100,
             random_state=random_state,
@@ -376,7 +397,7 @@ def run_models_for_target(
         # Save per-model-per-target metrics
         metrics_dir = os.path.join(results_dir, 'metrics')
         os.makedirs(metrics_dir, exist_ok=True)
-        out_path = os.path.join(metrics_dir, f"step5.5_{mname}_{target_name}.json")
+        out_path = os.path.join(metrics_dir, f"step4_{mname}_{target_name}.json")
         with open(out_path, 'w', encoding='utf-8') as f:
             json.dump(res, f, indent=2, ensure_ascii=False)
         print(f"💾 Saved: {out_path}")
@@ -420,30 +441,30 @@ def summarize_overall(results_by_target: Dict[str, Dict[str, Dict]], results_dir
         )[0][0]
 
     summary = {
-        'execution_note': 'Step 5.5 model comparison with rolling window',
+        'execution_note': 'Step 4 model comparison with rolling window',
         'targets_compared': list(results_by_target.keys()),
         'model_summary': model_summary,
         'best_model_by_avg_f1_macro': best_model,
     }
 
-    out_path = os.path.join(results_dir, 'step5.5_summary.json')
+    out_path = os.path.join(results_dir, 'step4_summary.json')
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
     print(f"\n✅ Summary saved: {out_path}")
 
 
 # ------------------------------------------------------------
-# Visualization and XGBoost integration from Step 5
+# Visualization and XGBoost integration from Step 4
 # ------------------------------------------------------------
-def load_xgb_from_step5(step5_results_path: str) -> Dict[str, Dict]:
-    """Load XGBoost rolling-window results from Step 5 comprehensive results file.
+def load_xgb_from_step4(step4_results_path: str) -> Dict[str, Dict]:
+    """Load XGBoost rolling-window results from Step 4 comprehensive results file.
 
-    Returns: { target_name: { 'avg_metrics': {...}, 'model': 'xgboost_from_step5' } }
+    Returns: { target_name: { 'avg_metrics': {...}, 'model': 'xgboost_from_step4' } }
     """
-    if not os.path.exists(step5_results_path):
-        print(f"⚠️ Step 5 results not found at: {step5_results_path}")
+    if not os.path.exists(step4_results_path):
+        print(f"⚠️ Step 4 results not found at: {step4_results_path}")
         return {}
-    with open(step5_results_path, 'r', encoding='utf-8') as f:
+    with open(step4_results_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     out: Dict[str, Dict] = {}
     for target_name, sections in data.items():
@@ -463,10 +484,10 @@ def load_xgb_from_step5(step5_results_path: str) -> Dict[str, Dict]:
 
 def create_model_comparison_visualizations(
     results_by_target: Dict[str, Dict[str, Dict]],
-    xgb_results: Dict[str, Dict],
+    xgb_results: Dict[str, Dict],  # Kept for compatibility but not used
     results_dir: str,
 ):
-    print("\n📊 Creating Model Comparison Visualizations (incl. XGBoost from Step 5)")
+    print("\n📊 Creating Model Comparison Visualizations (Fair Preprocessing for All Models)")
     vis_dir = os.path.join(results_dir, 'visualizations')
     os.makedirs(vis_dir, exist_ok=True)
 
@@ -476,21 +497,15 @@ def create_model_comparison_visualizations(
 
     # 1) F1-macro comparison across targets
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Step 5.5: Model Comparison (F1-macro) - Rolling Window', fontsize=16, fontweight='bold')
+    fig.suptitle('Step 4: Fair Model Comparison (F1-macro) - Identical Preprocessing', fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
     for idx, target in enumerate(targets):
         ax = axes[idx]
         names, scores, bar_colors = [], [], []
 
-        # XGBoost from Step 5
-        if target in xgb_results and xgb_results[target].get('avg_metrics'):
-            names.append('xgboost')
-            scores.append(xgb_results[target]['avg_metrics'].get('f1_macro', np.nan))
-            bar_colors.append(colors[0])
-
-        # Other models from current run
-        for mname in ['random_forest', 'mlp', 'logistic_regression']:
+        # All models from current run (including XGBoost with fair preprocessing)
+        for mname in model_order:
             if mname in results_by_target[target] and results_by_target[target][mname]['avg_metrics'] is not None:
                 names.append(mname)
                 scores.append(results_by_target[target][mname]['avg_metrics']['f1_macro'])
@@ -499,7 +514,7 @@ def create_model_comparison_visualizations(
 
         bars = ax.bar(names, scores, color=bar_colors, alpha=0.85)
         ax.set_ylabel('F1-Score (Macro)')
-        ax.set_title(f'{target} - F1 by Model')
+        ax.set_title(f'{target} - F1 by Model (Fair Comparison)')
         ax.grid(True, alpha=0.3)
         ax.tick_params(axis='x', rotation=20)
         for bar in bars:
@@ -508,28 +523,22 @@ def create_model_comparison_visualizations(
                         xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
 
     plt.tight_layout()
-    out_f1 = os.path.join(vis_dir, 'step5.5_model_comparison_f1.png')
+    out_f1 = os.path.join(vis_dir, 'step4_fair_model_comparison_f1.png')
     plt.savefig(out_f1, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"✅ Saved: {out_f1}")
 
     # 2) Accuracy comparison across targets
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Step 5.5: Model Comparison (Accuracy) - Rolling Window', fontsize=16, fontweight='bold')
+    fig.suptitle('Step 4: Fair Model Comparison (Accuracy) - Identical Preprocessing', fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
     for idx, target in enumerate(targets):
         ax = axes[idx]
         names, scores, bar_colors = [], [], []
 
-        # XGBoost from Step 5
-        if target in xgb_results and xgb_results[target].get('avg_metrics'):
-            names.append('xgboost')
-            scores.append(xgb_results[target]['avg_metrics'].get('accuracy', np.nan))
-            bar_colors.append(colors[0])
-
-        # Other models from current run
-        for mname in ['random_forest', 'mlp', 'logistic_regression']:
+        # All models from current run (including XGBoost with fair preprocessing)
+        for mname in model_order:
             if mname in results_by_target[target] and results_by_target[target][mname]['avg_metrics'] is not None:
                 names.append(mname)
                 scores.append(results_by_target[target][mname]['avg_metrics']['accuracy'])
@@ -538,7 +547,7 @@ def create_model_comparison_visualizations(
 
         bars = ax.bar(names, scores, color=bar_colors, alpha=0.85)
         ax.set_ylabel('Accuracy')
-        ax.set_title(f'{target} - Accuracy by Model')
+        ax.set_title(f'{target} - Accuracy by Model (Fair Comparison)')
         ax.grid(True, alpha=0.3)
         ax.tick_params(axis='x', rotation=20)
         for bar in bars:
@@ -547,7 +556,7 @@ def create_model_comparison_visualizations(
                         xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
 
     plt.tight_layout()
-    out_acc = os.path.join(vis_dir, 'step5.5_model_comparison_accuracy.png')
+    out_acc = os.path.join(vis_dir, 'step4_fair_model_comparison_accuracy.png')
     plt.savefig(out_acc, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"✅ Saved: {out_acc}")
@@ -557,9 +566,9 @@ def create_model_comparison_visualizations(
 # Main
 # ------------------------------------------------------------
 def main():
-    df, X, y, exclude_cols, target_cols = load_and_prepare_step4_data()
+    df, X, y, exclude_cols, target_cols = load_and_prepare_selected_data()
 
-    results_dir = 'result/step5.5_model_comparison_temporal'
+    results_dir = 'result/step4_model_comparison_temporal'
     os.makedirs(results_dir, exist_ok=True)
 
     print("\n🔬 TEMPORAL COMPARISON ENGINE (Rolling Window)")
@@ -581,15 +590,11 @@ def main():
         )
         results_by_target[target] = model_results
 
-    # Integrate XGBoost metrics from Step 5 comprehensive results
-    step5_path = 'result/step5_temporal_validation/step5_comprehensive_results.json'
-    xgb_results = load_xgb_from_step5(step5_path)
-
-    # Save overall summary
+    # Save overall summary (now includes XGBoost)
     summarize_overall(results_by_target, results_dir)
 
-    # Create visualizations comparing models incl. XGBoost from Step 5
-    create_model_comparison_visualizations(results_by_target, xgb_results, results_dir)
+    # Create visualizations comparing all models with fair preprocessing
+    create_model_comparison_visualizations(results_by_target, {}, results_dir)
 
     print("\n🎉 MODEL FAMILY COMPARISON COMPLETED!")
     print("=" * 60)

@@ -19,6 +19,7 @@ import os
 import warnings
 import logging
 from pathlib import Path
+from typing import Dict, Any, Tuple
 
 # Configure logging
 logging.basicConfig(
@@ -37,13 +38,13 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 class FinancialDataProcessor:
     """Process financial data to create financial ratios."""
     
-    def __init__(self, input_path, output_path):
+    def __init__(self, input_path: str, output_path: str) -> None:
         """
         Initialize the processor.
         
         Args:
-            input_path (str): Path to the input CSV file (KED재무DATA.csv)
-            output_path (str): Path to save the output CSV file (KED가공재무DATA.csv)
+            input_path: Path to the input CSV file (KED재무DATA.csv)
+            output_path: Path to save the output CSV file (KED가공재무DATA.csv)
         """
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
@@ -68,13 +69,13 @@ class FinancialDataProcessor:
             '총자산회전율': '총자산회전율'
         }
     
-    def validate_input_file(self):
+    def validate_input_file(self) -> None:
         """Validate that the input file exists."""
         if not self.input_path.exists():
             raise FileNotFoundError(f"입력 파일이 존재하지 않습니다: {self.input_path}")
         logger.info(f"Input file validated: {self.input_path}")
     
-    def load_data(self):
+    def load_data(self) -> pd.DataFrame:
         """Load the financial data from CSV."""
         try:
             logger.info(f"Loading financial data from {self.input_path}")
@@ -85,7 +86,7 @@ class FinancialDataProcessor:
             logger.error(f"Error loading data: {e}")
             raise
     
-    def validate_columns(self, df):
+    def validate_columns(self, df: pd.DataFrame) -> bool:
         """Validate that all required columns exist in the data."""
         logger.info("Validating required columns...")
         
@@ -102,7 +103,7 @@ class FinancialDataProcessor:
         logger.info("All required columns found")
         return True
     
-    def convert_numeric_columns(self, df):
+    def convert_numeric_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Convert financial columns to numeric type."""
         logger.info("Converting financial columns to numeric...")
         
@@ -115,7 +116,7 @@ class FinancialDataProcessor:
         
         return df
     
-    def safe_division(self, numerator, denominator):
+    def safe_division(self, numerator: pd.Series, denominator: pd.Series) -> np.ndarray:
         """
         Perform safe division that handles NaN and zero values.
         
@@ -132,7 +133,7 @@ class FinancialDataProcessor:
             np.nan
         )
     
-    def calculate_financial_ratios(self, df):
+    def calculate_financial_ratios(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate financial ratios from the data."""
         logger.info("Calculating financial ratios...")
         
@@ -168,7 +169,7 @@ class FinancialDataProcessor:
         
         return result
     
-    def select_output_columns(self, df):
+    def select_output_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Select only the required output columns."""
         logger.info("Selecting output columns...")
         
@@ -184,7 +185,7 @@ class FinancialDataProcessor:
         
         return result
     
-    def save_result(self, df):
+    def save_result(self, df: pd.DataFrame) -> None:
         """Save the processed data to CSV."""
         try:
             # Create output directory if it doesn't exist
@@ -198,7 +199,7 @@ class FinancialDataProcessor:
             logger.error(f"Error saving result: {e}")
             raise
     
-    def generate_summary_statistics(self, df):
+    def generate_summary_statistics(self, df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         """Generate summary statistics for the calculated ratios."""
         logger.info("Generating summary statistics...")
         
@@ -218,7 +219,7 @@ class FinancialDataProcessor:
         
         return summary
     
-    def process(self):
+    def process(self) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]:
         """Execute the complete financial data processing pipeline."""
         logger.info("Starting financial data processing...")
         
@@ -254,41 +255,34 @@ class FinancialDataProcessor:
             logger.error(f"Processing failed: {e}")
             raise
 
-def main():
+def main() -> None:
     """Main function to run the financial data processing."""
-    # Configuration
-    table_path = r"C:\Users\K_SURE_PROJECT\data_analysis\KSURE_Final\dataset"
+    # Configuration - using relative paths
+    table_path = "../data/raw"
     input_file = "KED재무DATA.csv"
     output_file = "KED가공재무DATA.csv"
     
     input_path = os.path.join(table_path, input_file)
     output_path = os.path.join(table_path, output_file)
     
-    print("Financial Data Processing")
-    print("=" * 50)
-    print(f"Input: {input_file}")
-    print(f"Output: {output_file}")
-    print("=" * 50)
+    logger.info("Starting Financial Data Processing")
+    logger.info(f"Input: {input_file}")
+    logger.info(f"Output: {output_file}")
     
     # Create processor and run
     processor = FinancialDataProcessor(input_path, output_path)
     result, summary = processor.process()
     
-    # Print summary
-    print(f"\nProcessing Summary:")
-    print(f"Input file: {input_path}")
-    print(f"Output file: {output_path}")
-    print(f"Total records processed: {len(result)}")
-    print(f"Output columns: {list(result.columns)}")
+    # Log summary
+    logger.info(f"Processing completed successfully")
+    logger.info(f"Total records processed: {len(result)}")
+    logger.info(f"Output columns: {list(result.columns)}")
     
-    print(f"\nFinancial Ratios Summary:")
+    logger.info("Financial Ratios Summary:")
     for ratio, stats in summary.items():
-        print(f"\n{ratio}:")
-        print(f"  Count: {stats['count']:,}")
-        print(f"  Mean: {stats['mean']:.4f}")
-        print(f"  Std: {stats['std']:.4f}")
-        print(f"  Range: [{stats['min']:.4f}, {stats['max']:.4f}]")
-        print(f"  Null values: {stats['null_count']:,}")
+        logger.info(f"{ratio}: Count={stats['count']:,}, Mean={stats['mean']:.4f}, "
+                   f"Std={stats['std']:.4f}, Range=[{stats['min']:.4f}, {stats['max']:.4f}], "
+                   f"Null={stats['null_count']:,}")
 
 if __name__ == "__main__":
     main()

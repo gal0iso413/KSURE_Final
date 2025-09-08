@@ -17,9 +17,18 @@ Design Principles:
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 from typing import Dict, List, Optional, Tuple
 import warnings
+import logging
 warnings.filterwarnings('ignore')
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 class DatasetCreator:
@@ -59,18 +68,41 @@ class DatasetCreator:
         self.base_data = None
         self.final_dataset = None
         
-        print("🚀 Dataset Creator Initialized")
-        print(f"📊 Prediction horizons: {config.get('prediction_horizons', [1,2,3,4])} years")
-        print(f"📈 X variable sources: {len(config.get('x_variable_paths', {}))} tables")
+        # Validate current_date configuration
+        self._validate_current_date()
+        
+        logger.info("Dataset Creator Initialized")
+        logger.info(f"Prediction horizons: {config.get('prediction_horizons', [1,2,3,4])} years")
+        logger.info(f"X variable sources: {len(config.get('x_variable_paths', {}))} tables")
+        logger.info(f"Current date: {config.get('current_date', '2025-07-16')}")
+    
+    def _validate_current_date(self):
+        """Validate current_date configuration parameter"""
+        current_date_config = self.config.get('current_date', '2025-07-16')
+        
+        try:
+            if isinstance(current_date_config, str):
+                # Validate string format
+                datetime.strptime(current_date_config, '%Y-%m-%d')
+            elif isinstance(current_date_config, datetime):
+                # datetime object is valid
+                pass
+            elif hasattr(current_date_config, 'date'):
+                # datetime-like object with date() method
+                current_date_config.date()
+            else:
+                raise ValueError(f"Invalid current_date type: {type(current_date_config)}")
+        except (ValueError, AttributeError) as e:
+            raise ValueError(f"Invalid current_date configuration '{current_date_config}': {e}. "
+                           f"Expected format: 'YYYY-MM-DD' string or datetime object")
     
     def load_base_table(self) -> pd.DataFrame:
         """Load and prepare base contracts table"""
-        print("\n1️⃣ Loading Base Table")
-        print("-" * 40)
+        logger.info("Loading Base Table")
         
         try:
             self.base_data = pd.read_csv(self.config['base_table_path'])
-            print(f"✅ Base table loaded: {len(self.base_data):,} contracts")
+            logger.info(f"Base table loaded: {len(self.base_data):,} contracts")
             
             # Get column names from config
             base_columns = self.config['column_mappings']['base_table']
@@ -95,18 +127,18 @@ class DatasetCreator:
             regime_series[mask_post] = 2
             self.base_data['조기경보선정기준변화'] = regime_series
             
-            print(f"📅 Date column: {date_col}")
-            print(f"📅 Date range: {self.base_data[date_col].min()} to {self.base_data[date_col].max()}")
+            logger.info(f"Date column: {date_col}")
+            logger.info(f"Date range: {self.base_data[date_col].min()} to {self.base_data[date_col].max()}")
             # Regime distribution summary
             regime_counts = self.base_data['조기경보선정기준변화'].value_counts().sort_index()
             pre_cnt = int(regime_counts.get(0, 0))
             mid_cnt = int(regime_counts.get(1, 0))
             post_cnt = int(regime_counts.get(2, 0))
-            print(f"🏷️ Regime counts → pre_20191112: {pre_cnt}, 20191112_20210304: {mid_cnt}, post_20210304: {post_cnt}")
+            logger.info(f"Regime counts → pre_20191112: {pre_cnt}, 20191112_20210304: {mid_cnt}, post_20210304: {post_cnt}")
             return self.base_data
             
         except Exception as e:
-            print(f"❌ Error loading base table: {e}")
+            logger.error(f"Error loading base table: {e}")
             raise
     
     def join_y_variables(self) -> pd.DataFrame:
@@ -128,8 +160,7 @@ class DatasetCreator:
         
         This ensures fair comparison and prevents temporal bias.
         """
-        print("\n2️⃣ Joining Y Variables (Future Risk)")
-        print("-" * 40)
+        logger.info("Joining Y Variables (Future Risk)")
         
         try:
             # Load risk data
@@ -147,8 +178,8 @@ class DatasetCreator:
             risk_data[risk_start_date_col] = pd.to_datetime(risk_data[risk_start_date_col], format='%Y-%m-%d')
             risk_data[risk_end_date_col] = pd.to_datetime(risk_data[risk_end_date_col], format='%Y-%m-%d')
             
-            print(f"📊 Risk data loaded: {len(risk_data):,} risk events")
-            print(f"📊 Risk columns: start_date={risk_start_date_col}, end_date={risk_end_date_col}, firm_id={risk_firm_id_col}, level={risk_level_col}")
+            logger.info(f"Risk data loaded: {len(risk_data):,} risk events")
+            logger.info(f"Risk columns: start_date={risk_start_date_col}, end_date={risk_end_date_col}, firm_id={risk_firm_id_col}, level={risk_level_col}")
             
             # Initialize result dataframe
             result_df = self.base_data.copy()
@@ -159,67 +190,79 @@ class DatasetCreator:
             # Create Y variables for each prediction horizon
             prediction_horizons = self.config.get('prediction_horizons', [1, 2, 3, 4])
             
+            # Get current date once for all processing
+            current_date_config = self.config.get('current_date', '2025-07-16')
+            if isinstance(current_date_config, str):
+                current_date = datetime.strptime(current_date_config, '%Y-%m-%d').date()
+            elif isinstance(current_date_config, datetime):
+                current_date = current_date_config.date()
+            else:
+                current_date = current_date_config
+            
+            # Vectorized processing for all years
             for year in prediction_horizons:
-                print(f"   📈 Processing Year{year} risk...")
+                logger.info(f"Processing Year{year} risk...")
                 
-                year_risks = []
+                # Vectorized calculation of prediction windows
+                result_df[f'prediction_start_{year}'] = result_df[contract_date_col] + pd.DateOffset(years=(year-1))
+                result_df[f'prediction_end_{year}'] = result_df[contract_date_col] + pd.DateOffset(years=year)
                 
-                for idx, row in result_df.iterrows():
-                    contract_date = row[contract_date_col]
-                    risk_id = row[base_risk_id_col]
+                # Check which prediction periods are complete
+                prediction_end_dates = pd.to_datetime(result_df[f'prediction_end_{year}']).dt.date
+                period_complete = prediction_end_dates <= current_date
+                
+                # Initialize risk column with NaN for incomplete periods
+                result_df[f'risk_year{year}'] = np.where(period_complete, 0, np.nan)
+                
+                # Process only complete periods for risk calculation
+                complete_contracts = result_df[period_complete].copy()
+                
+                if len(complete_contracts) > 0:
+                    # Create risk mapping for efficient lookup
+                    risk_mapping = {}
                     
-                    # Define individual prediction window (Year N = specific year N from contract date)
-                    prediction_window_start = contract_date + timedelta(days=365 * (year - 1))
-                    prediction_window_end = contract_date + timedelta(days=365 * year)
+                    # Group risk data by firm for faster lookup
+                    risk_by_firm = risk_data.groupby(risk_firm_id_col)
                     
-                    # Check if prediction period has completed (enough time has passed)
-                    # If you want to change the current date, change the date here
-                    # current date = 20250716
-                    current_date = datetime(2025,7,16).date()
-                    if isinstance(contract_date, pd.Timestamp):
-                        contract_date_only = contract_date.date()
-                    else:
-                        contract_date_only = contract_date
+                    for firm_id, firm_risks in risk_by_firm:
+                        risk_mapping[firm_id] = firm_risks
                     
-                    if isinstance(prediction_window_end, pd.Timestamp):
-                        prediction_end_date = prediction_window_end.date()
-                    else:
-                        prediction_end_date = prediction_window_end
-                    
-                    # NEW LOGIC: All risk levels require complete prediction periods
-                    if prediction_end_date > current_date:
-                        # Prediction period not completed yet - assign NaN for all cases
-                        year_risks.append(np.nan)
-                    else:
-                        # Prediction period is complete - now check for risk events
-                        # Find risks that overlap with this prediction window
-                        # Overlap logic: risk_start < window_end AND risk_end > window_start
-                        firm_risks = risk_data[
-                            (risk_data[risk_firm_id_col] == risk_id) &
-                            (risk_data[risk_start_date_col] < prediction_window_end) &
-                            (risk_data[risk_end_date_col] > prediction_window_start)
-                        ]
+                    # Process each complete contract
+                    for idx in complete_contracts.index:
+                        contract_row = complete_contracts.loc[idx]
+                        risk_id = contract_row[base_risk_id_col]
+                        prediction_start = contract_row[f'prediction_start_{year}']
+                        prediction_end = contract_row[f'prediction_end_{year}']
                         
-                        if len(firm_risks) > 0:
-                            # Risk events found in complete period - assign max risk level
-                            max_risk = firm_risks[risk_level_col].max()
-                            year_risks.append(max_risk)
-                        else:
-                            # No risk events in complete period - assign 0
-                            year_risks.append(0)
+                        if risk_id in risk_mapping:
+                            firm_risks = risk_mapping[risk_id]
+                            
+                            # Find overlapping risks using vectorized operations
+                            overlapping_risks = firm_risks[
+                                (firm_risks[risk_start_date_col] < prediction_end) &
+                                (firm_risks[risk_end_date_col] > prediction_start)
+                            ]
+                            
+                            if len(overlapping_risks) > 0:
+                                max_risk = overlapping_risks[risk_level_col].max()
+                                result_df.loc[idx, f'risk_year{year}'] = max_risk
                 
-                result_df[f'risk_year{year}'] = year_risks
-                risk_count = sum(1 for x in year_risks if not pd.isna(x) and x > 0)
-                zero_count = sum(1 for x in year_risks if not pd.isna(x) and x == 0)
-                nan_count = sum(1 for x in year_risks if pd.isna(x))
+                # Clean up temporary columns
+                result_df.drop([f'prediction_start_{year}', f'prediction_end_{year}'], axis=1, inplace=True)
                 
-                print(f"      ✅ Year{year}: {risk_count} firms with risk, {zero_count} firms with no risk, {nan_count} missing data")
+                # Calculate statistics
+                year_risks = result_df[f'risk_year{year}']
+                risk_count = ((year_risks > 0) & (~year_risks.isna())).sum()
+                zero_count = (year_risks == 0).sum()
+                nan_count = year_risks.isna().sum()
+                
+                logger.info(f"Year{year}: {risk_count} firms with risk, {zero_count} firms with no risk, {nan_count} missing data")
             
             self.base_data = result_df
             return result_df
             
         except Exception as e:
-            print(f"❌ Error joining Y variables: {e}")
+            logger.error(f"Error joining Y variables: {e}")
             raise
     
     def _parse_join_columns(self, x_columns: Dict, data_type: str) -> Tuple[Optional[str], Optional[str]]:
@@ -299,8 +342,7 @@ class DatasetCreator:
         - Different lookback periods for different data types (monthly periods)
         - Static mode: Simple firm ID join without date filtering or time periods
         """
-        print("\n3️⃣ Joining X Variables (Historical Predictors)")
-        print("-" * 40)
+        logger.info("Joining X Variables (Historical Predictors)")
         
         result_df = self.base_data.copy()
         
@@ -317,7 +359,7 @@ class DatasetCreator:
         x_table_columns = self.config['column_mappings']['x_tables']
         
         for data_type, file_path in x_variable_paths.items():
-            print(f"   📊 Processing {data_type} data...")
+            logger.info(f"Processing {data_type} data...")
             
             try:
                 # Load X variable data
@@ -330,13 +372,13 @@ class DatasetCreator:
                 # Handle date column based on mode
                 if mode == 'static':
                     x_date_col = None  # Static mode doesn't need date column
-                    print(f"      📊 Static data: no date column required")
+                    logger.info(f"Static data: no date column required")
                 else:
                     x_date_col = x_columns.get('date_column', 'date')
                     if x_date_col not in x_data.columns:
                         raise ValueError(f"Date column '{x_date_col}' not found in {data_type} table. Available columns: {list(x_data.columns)}")
                     x_data[x_date_col] = pd.to_datetime(x_data[x_date_col], format='%Y%m%d')
-                    print(f"      📈 Data range: {x_data[x_date_col].min()} to {x_data[x_date_col].max()}")
+                    logger.info(f"Data range: {x_data[x_date_col].min()} to {x_data[x_date_col].max()}")
                 
                 x_table_join_col, base_table_join_col = self._parse_join_columns(x_columns, data_type)
                 
@@ -345,10 +387,10 @@ class DatasetCreator:
                 
                 # Get configuration for this data type (skip temporal config for static mode)
                 if mode == 'static':
-                    print(f"      🔄 Mode: {mode} - Static reference data")
-                    print(f"      🏢 Firm-specific: {'Yes' if x_table_join_col else 'No (market-level)'}")
+                    logger.info(f"Mode: {mode} - Static reference data")
+                    logger.info(f"Firm-specific: {'Yes' if x_table_join_col else 'No (market-level)'}")
                     if x_table_join_col:
-                        print(f"      🔗 Join: {x_table_join_col} (X table) ↔ {base_table_join_col} (base table)")
+                        logger.info(f"Join: {x_table_join_col} (X table) ↔ {base_table_join_col} (base table)")
                 else:
                     lookback = lookback_periods.get(data_type, 12)  # Default 12 periods
                     aggregation = x_aggregation_methods.get(data_type, 'most_recent')  # Default 'most_recent'
@@ -357,10 +399,10 @@ class DatasetCreator:
                     # Sort by date for efficient searching
                     x_data = x_data.sort_values(x_date_col)
                     
-                    print(f"      🔄 Mode: {mode}, Periods: {lookback}, Interval: {interval_days} days, Aggregation: {aggregation}")
-                    print(f"      🏢 Firm-specific: {'Yes' if x_table_join_col else 'No (market-level)'}")
+                    logger.info(f"Mode: {mode}, Periods: {lookback}, Interval: {interval_days} days, Aggregation: {aggregation}")
+                    logger.info(f"Firm-specific: {'Yes' if x_table_join_col else 'No (market-level)'}")
                     if x_table_join_col:
-                        print(f"      🔗 Join: {x_table_join_col} (X table) ↔ {base_table_join_col} (base table)")
+                        logger.info(f"Join: {x_table_join_col} (X table) ↔ {base_table_join_col} (base table)")
                 
                 # Determine feature columns to use
                 feature_cols = self._get_feature_columns(x_data, data_type, x_date_col, x_table_join_col)
@@ -379,17 +421,17 @@ class DatasetCreator:
                     self._process_static_mode_optimized(result_df, x_data, data_type, feature_cols,
                                              base_table_join_col, x_table_join_col)
                 else:
-                    print(f"      ❌ Unknown mode '{mode}' for {data_type}, skipping...")
+                    logger.warning(f"Unknown mode '{mode}' for {data_type}, skipping...")
                     continue
                 
                 feature_count = len([col for col in result_df.columns if col.startswith(f"{data_type}_")])
                 if mode == 'static':
-                    print(f"      ✅ Added {feature_count} features from {data_type} ({len(feature_cols)} static columns)")
+                    logger.info(f"Added {feature_count} features from {data_type} ({len(feature_cols)} static columns)")
                 else:
-                    print(f"      ✅ Added {feature_count} features from {data_type} ({len(feature_cols)} columns × {lookback} periods)")
+                    logger.info(f"Added {feature_count} features from {data_type} ({len(feature_cols)} columns × {lookback} periods)")
                 
             except Exception as e:
-                print(f"      ❌ Error processing {data_type}: {e}")
+                logger.error(f"Error processing {data_type}: {e}")
                 continue
         
         self.final_dataset = result_df
@@ -429,7 +471,7 @@ class DatasetCreator:
         if include_columns is not None:
             # Only keep specified columns (that exist in the data)
             feature_cols = [col for col in include_columns if col in all_columns]
-            print(f"      🎯 Include filter: {len(feature_cols)}/{len(include_columns)} columns found")
+            logger.info(f"Include filter: {len(feature_cols)}/{len(include_columns)} columns found")
         else:
             # Use all columns except system columns
             feature_cols = [col for col in all_columns if col not in system_cols]
@@ -441,7 +483,7 @@ class DatasetCreator:
             feature_cols = [col for col in feature_cols if col not in exclude_columns]
             excluded_count = before_count - len(feature_cols)
             if excluded_count > 0:
-                print(f"      🚫 Exclude filter: removed {excluded_count} columns")
+                logger.info(f"Exclude filter: removed {excluded_count} columns")
         
         return feature_cols
     
@@ -483,7 +525,7 @@ class DatasetCreator:
                 pass
 
         # 3) Fallback
-        print(f"      ⚠️ Unknown interval '{interval_config}' for {data_type}, using monthly (30 days)")
+        logger.warning(f"Unknown interval '{interval_config}' for {data_type}, using monthly (30 days)")
         return 30
     
     def _apply_availability_delay(self, contract_date: datetime, data_type: str) -> datetime:
@@ -615,12 +657,14 @@ class DatasetCreator:
                         past_val = tk_values.get(col, np.nan)
                         
                         # Compute symmetric percentage change: (current - past) / ((|current| + |past|) / 2)
+                        # This formula prevents division by zero issues and handles negative values gracefully
+                        # It provides symmetric treatment: change from A to B equals negative change from B to A
                         if pd.isna(current_val) or pd.isna(past_val):
                             rate = np.nan
                         elif current_val == 0 and past_val == 0:
                             rate = 0.0  # No change when both values are zero
                         else:
-                            # Symmetric percentage change formula
+                            # Symmetric percentage change formula - robust against zero denominators and sign changes
                             rate = (current_val - past_val) / ((abs(current_val) + abs(past_val)) / 2)
                         
                         rate_col = f"{data_type}_{col}_변화율_{k}{unit_label}"
@@ -743,7 +787,7 @@ class DatasetCreator:
         # Process based on whether firm-specific or market-level
         if x_table_join_col is not None:
             # Firm-specific static data
-            print(f"      🔗 Processing firm-specific static data...")
+            logger.info(f"Processing firm-specific static data...")
             
             # Create a mapping from firm ID to feature values for efficient lookup
             firm_mapping = {}
@@ -782,7 +826,7 @@ class DatasetCreator:
                     result_df.loc[idx, feature_name] = firm_data.get(col, np.nan)
         else:
             # Market-level static data (same values for all contracts)
-            print(f"      🌍 Processing market-level static data...")
+            logger.info(f"Processing market-level static data...")
             
             if len(x_data) > 0:
                 # Use the first row (assuming all rows have same values for market-level data)
@@ -818,7 +862,7 @@ class DatasetCreator:
             elif aggregation == 'min':
                 result[col] = data[col].min()
             else:
-                print(f"      ⚠️ Unknown aggregation method '{aggregation}', using most_recent")
+                logger.warning(f"Unknown aggregation method '{aggregation}', using most_recent")
                 result[col] = data.iloc[-1][col]
         
         return result
@@ -830,8 +874,7 @@ class DatasetCreator:
         Returns:
             Complete dataset with Y and X variables
         """
-        print("🏗️ Creating Credit Risk Dataset")
-        print("=" * 50)
+        logger.info("Creating Credit Risk Dataset")
         
         # Step 1: Load base table
         self.load_base_table()
@@ -847,33 +890,32 @@ class DatasetCreator:
         
         return self.final_dataset
     
-    def print_dataset_summary(self):
+    def print_dataset_summary(self) -> None:
         """Print comprehensive dataset summary"""
         if self.final_dataset is None:
-            print("❌ No dataset created yet")
+            logger.error("No dataset created yet")
             return
         
-        print("\n📊 DATASET SUMMARY")
-        print("=" * 50)
+        logger.info("DATASET SUMMARY")
         
         df = self.final_dataset
         
         # Basic stats
-        print(f"📈 Total records: {len(df):,}")
-        print(f"📊 Total features: {len(df.columns):,}")
+        logger.info(f"Total records: {len(df):,}")
+        logger.info(f"Total features: {len(df.columns):,}")
         
         # Regime summary
         if '조기경보선정기준변화' in df.columns:
             regime_counts = df['조기경보선정기준변화'].value_counts().sort_index()
-            print(f"\n🏷️ 조기경보선정기준변화 (0=pre-20191112, 1=20191112-20210303, 2=post-20210304): {dict(regime_counts)}")
+            logger.info(f"조기경보선정기준변화 (0=pre-20191112, 1=20191112-20210303, 2=post-20210304): {dict(regime_counts)}")
         
         # Y variable summary
         y_cols = [col for col in df.columns if col.startswith('risk_year')]
-        print(f"\n🎯 Y Variables: {len(y_cols)}")
+        logger.info(f"Y Variables: {len(y_cols)}")
         for col in y_cols:
             risk_dist = df[col].value_counts().sort_index()
             nan_count = df[col].isna().sum()
-            print(f"   {col}: {dict(risk_dist)} (NaN: {nan_count})")
+            logger.info(f"   {col}: {dict(risk_dist)} (NaN: {nan_count})")
         
         # X variable summary by type
         x_data_types = set()
@@ -883,33 +925,33 @@ class DatasetCreator:
                 data_type = col.split('_')[0]
                 x_data_types.add(data_type)
         
-        print(f"\n📊 X Variable Types: {len(x_data_types)}")
+        logger.info(f"X Variable Types: {len(x_data_types)}")
         for data_type in sorted(x_data_types):
             type_cols = [col for col in df.columns if col.startswith(f"{data_type}_")]
-            print(f"   {data_type}: {len(type_cols)} features")
+            logger.info(f"   {data_type}: {len(type_cols)} features")
         
         # Missing data summary
-        print(f"\n⚠️ Missing Data Summary:")
+        logger.info("Missing Data Summary:")
         missing_pct = (df.isna().sum() / len(df) * 100).round(1)
         high_missing = missing_pct[missing_pct > 10].sort_values(ascending=False)
         if len(high_missing) > 0:
-            print(f"   Features with >10% missing: {len(high_missing)}")
+            logger.info(f"   Features with >10% missing: {len(high_missing)}")
             for col, pct in high_missing.head(20).items():
-                print(f"      {col}: {pct}%")
+                logger.info(f"      {col}: {pct}%")
         else:
-            print("   ✅ All features have <10% missing data")
+            logger.info("   All features have <10% missing data")
         
-        print("\n✅ Dataset creation completed!")
+        logger.info("Dataset creation completed!")
     
-    def save_dataset(self, output_path: str):
+    def save_dataset(self, output_path: str) -> None:
         """Save final dataset to CSV"""
         if self.final_dataset is None:
-            print("❌ No dataset to save")
+            logger.error("No dataset to save")
             return
         
         self.final_dataset.to_csv(output_path, index=False)
-        print(f"💾 Dataset saved to: {output_path}")
-        print(f"📊 Shape: {self.final_dataset.shape}")
+        logger.info(f"Dataset saved to: {output_path}")
+        logger.info(f"Shape: {self.final_dataset.shape}")
 
 
 # Example configuration
@@ -917,16 +959,16 @@ def get_example_config():
     """Example configuration for dataset creation"""
     return {
         # File paths
-        'base_table_path': 'dataset/청약.csv',
-        'risk_table_path': 'dataset/조기경보이력_리스크단계.csv',
+        'base_table_path': '../data/raw/청약.csv',
+        'risk_table_path': '../data/processed/조기경보이력_리스크단계.csv',
         'x_variable_paths': {
-            '재무정보': 'dataset/KED가공재무DATA.csv',
-            '수출실적': 'dataset/무역통계진흥원수출입실적.csv',
-            '신용등급': 'dataset/KED종합신용정보.csv', 
-            'GDP': 'dataset/gdp_data.csv',
-            '총수출': 'dataset/trade_data.csv',
-            '업종': 'dataset/업종코드_수출자.csv',
-            '환변동': 'dataset/exchange_rate_data.csv',
+            '재무정보': '../data/processed/KED가공재무DATA.csv',
+            '수출실적': '../data/raw/무역통계진흥원수출입실적.csv',
+            '신용등급': '../data/raw/KED종합신용정보.csv', 
+            'GDP': '../data/raw/gdp_data.csv',
+            '총수출': '../data/raw/trade_data.csv',
+            '업종': '../data/raw/업종코드_수출자.csv',
+            '환변동': '../data/raw/exchange_rate_data.csv',
         },
         
         # Table-specific column mappings
@@ -1046,6 +1088,9 @@ def get_example_config():
         # Prediction horizons
         'prediction_horizons': [1, 2, 3, 4],  # Years to predict
         
+        # Current date for dataset creation (ensures reproducibility)
+        'current_date': '2025-07-16',  # Format: 'YYYY-MM-DD' or datetime object
+        
         # Data availability delays (days) - realistic delays for financial data
         'data_availability_delays': {
             '재무정보': 45,     # Financial reports: 45 days after quarter/year end
@@ -1076,7 +1121,7 @@ if __name__ == "__main__":
     dataset = creator.create_dataset()
     
     # Save result
-    creator.save_dataset('dataset/credit_risk_dataset.csv')
+    creator.save_dataset('../data/processed/credit_risk_dataset.csv')
     
-    print("\n🎉 Dataset creation completed!")
-    print("Ready for XGBoost training! 🚀")
+    logger.info("Dataset creation completed!")
+    logger.info("Ready for XGBoost training!")

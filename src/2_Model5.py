@@ -1,8 +1,8 @@
 """
-XGBoost Risk Prediction Model - Step 6: Class Imbalance Strategy (Simplified)
+XGBoost Risk Prediction Model - Step 5: Class Imbalance Strategy (Simplified)
 ============================================================================
 
-Scope in this simplified Step 6:
+Scope in this simplified Step 5:
 1. Algorithm-level Reweighting: Class-balanced sample weights on a single XGBoost model; predict via argmax
 
 Shared Evaluation Layer:
@@ -32,6 +32,14 @@ from sklearn.utils.class_weight import compute_sample_weight
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 import platform
 import matplotlib.font_manager as fm
 warnings.filterwarnings('ignore')
@@ -84,13 +92,13 @@ setup_korean_font()
 plt.style.use('default')
 sns.set_palette("husl")
 
-def load_step4_data():
-    """Load Step 4 optimized data with proper temporal sorting"""
-    print("🚀 CLASS IMBALANCE STRATEGY (SIMPLIFIED) - PHASE 1-2 IMPLEMENTATION")
+def load_selected_data():
+    """Load Step 2 optimized data with proper temporal sorting"""
+    print("🚀 CLASS IMBALANCE STRATEGY (SIMPLIFIED) - STEP 5 IMPLEMENTATION")
     print("=" * 70)
     
-    df = pd.read_csv('dataset/credit_risk_dataset_step4.csv')
-    print(f"✅ Step 4 dataset loaded: {df.shape}")
+    df = pd.read_csv('dataset/credit_risk_dataset_selected.csv')
+    print(f"✅ Step 2 dataset loaded: {df.shape}")
     
     # Sort by 보험청약일자 for temporal validation
     if '보험청약일자' in df.columns:
@@ -569,7 +577,7 @@ def save_enhanced_results(all_results, best_selection, results_dir):
     os.makedirs(results_dir, exist_ok=True)
     
     # Save detailed results
-    with open(f'{results_dir}/step6_enhanced_results.json', 'w', encoding='utf-8') as f:
+    with open(f'{results_dir}/step5_enhanced_results.json', 'w', encoding='utf-8') as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False, default=str)
     
     # Create simplified summary
@@ -586,7 +594,7 @@ def save_enhanced_results(all_results, best_selection, results_dir):
         }
     }
     
-    with open(f'{results_dir}/step6_enhanced_summary.json', 'w', encoding='utf-8') as f:
+    with open(f'{results_dir}/step5_enhanced_summary.json', 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
     
     print(f"✅ Enhanced results saved to: {results_dir}")
@@ -596,9 +604,9 @@ def save_enhanced_results(all_results, best_selection, results_dir):
 def main():
     """Main execution - Simplified Class Imbalance Strategy (Phases 1-2)"""
 
-    df, X, y, exclude_cols, target_cols = load_step4_data()
+    df, X, y, exclude_cols, target_cols = load_selected_data()
 
-    print(f"\n🔬 CLASS IMBALANCE STRATEGY ENGINE - SIMPLIFIED")
+    print(f"\n🔬 STEP 5: CLASS IMBALANCE STRATEGY ENGINE - SIMPLIFIED")
     print("=" * 70)
     print(f"📊 Testing simplified methods across {len(target_cols)} targets")
     print(f"🎯 Targets: {target_cols}")
@@ -615,13 +623,13 @@ def main():
 
     best_selection = select_best_imbalance_method(all_results)
 
-    results_dir = 'result/step6_class_imbalance'
+    results_dir = 'result/step5_class_imbalance'
     save_enhanced_results(all_results, best_selection, results_dir)
 
     # Create comprehensive visualizations
     create_comprehensive_visualizations(all_results, results_dir)
 
-    print(f"\n🎉 SIMPLIFIED CLASS IMBALANCE STRATEGY COMPLETED!")
+    print(f"\n🎉 STEP 5: SIMPLIFIED CLASS IMBALANCE STRATEGY COMPLETED!")
     print("=" * 70)
     print("✅ Phases 1-2 implemented with temporal robustness and explainability")
     print("✅ Per-target best method selected")

@@ -1,32 +1,37 @@
 """
-Final Grading Engine (v1)
-=================================
+Final Grading Engine with Strict Data Separation (v1)
+====================================================
 
 Purpose
-- Convert four annual ordinal predictions (class probabilities for years 1..4) into a single continuous 4-year risk score
-  using a survival-consistent, hazard-weighted aggregation, then map to discrete grades via supervised, monotonic binning.
+- Convert four annual ordinal predictions into discrete grades
+- Respect strict data separation rules from 1_Split.py
+
+Key Changes for Strict Validation:
+- Grade rule creation: Use TRAIN + VALIDATION data only
+- Grade application: Apply rules to all data (train+validation+oot)
+- Calibration tables: Built from TRAIN + VALIDATION only
+- Never use OOT data for any rule creation or calibration
 
 Design Highlights
-- Per-year ordinal-to-event calibration using empirical event rates r_{t,k} with isotonic regression over classes to enforce monotonicity
-- Hazard transform h_t = -ln(1 - p_any_t) with epsilon clipping for numeric safety; final_score = 1 - exp(-Σ w_t h_t)
-- Monotonic supervised binning without external deps: quantile pre-bins + Pool-Adjacent-Violators merging + reduction to target grade count
-- Explainability: per-year contributions and shares; business-readable reason_code with combined reasons if two top shares are close
-- Governance-ready outputs: frozen cutpoints, calibration tables, config snapshot
+- Per-year ordinal-to-event calibration using empirical event rates r_{t,k} with isotonic regression
+- Hazard transform h_t = -ln(1 - p_any_t) with epsilon clipping
+- Monotonic supervised binning: quantile pre-bins + Pool-Adjacent-Violators merging
+- Grade rules created from TRAIN+VALIDATION, applied to all data
 
 Inputs (defaults)
-- dataset_path: dataset/credit_risk_dataset_step4.csv (must contain risk_year{1..4}, keys for join like 청약번호, 보험청약일자)
-- predictions_path: result/predictions/yearly_multiclass_proba.csv (requires proba_y{t}_{0..3} for t=1..4 plus join keys)
+- predictions_path: ../results/predictions/yearly_multiclass_proba.csv (from Step 3 with split labels)
+- Uses split datasets from ../data/splits/ directory
 
 Outputs
-- result/step10_grading/4_grade_assignments.csv
-- result/step10_grading/grade_bins.json
-- result/step10_grading/calibration_tables.csv
-- result/step10_grading/config_used.json
-- result/step10_grading/log.txt
+- ../results/grading/grade_assignments.csv (all data with grades)
+- ../results/grading/grade_bins.json (rules created from train+validation)
+- ../results/grading/calibration_tables.csv
+- ../results/grading/config_used.json
 
-Notes
-- This script does not train upstream models; it assumes predictions are already generated.
-- Weight optimization is optional and OFF by default to avoid overfitting; you can pass --weights or enable simple grid search.
+Data Usage Rules:
+- Rule Creation: TRAIN + VALIDATION only
+- Rule Application: All data (train+validation+oot)
+- OOT data: Gets grades but never used for rule creation
 """
 
 from __future__ import annotations
@@ -43,10 +48,32 @@ import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import roc_auc_score
+
+# Suppress pandas FutureWarnings about fillna downcasting
+pd.set_option('future.no_silent_downcasting', True)
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Define consistent grade order (safe to risky)
+GRADE_ORDER = ["AAA", "AA", "A", "BBB", "BB", "B", "CCC", "CC", "C", "D"]
+# Add Excel writing capability
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    EXCEL_AVAILABLE = True
+except ImportError:
+    EXCEL_AVAILABLE = False
+    print("Warning: openpyxl not available. Excel output will be disabled.")
 
 
 # -----------------------------
@@ -56,10 +83,10 @@ import seaborn as sns
 
 @dataclass
 class GradingConfig:
-    dataset_path: str = "dataset/credit_risk_dataset_step4.csv"
-    predictions_path: str = "result/predictions/yearly_multiclass_proba.csv"
-    output_dir: str = "result/step10_grading"
-    weights: Tuple[float, float, float, float] = (0.25, 0.25, 0.25, 0.25)
+    dataset_path: str = "../data/processed/credit_risk_dataset_selected.csv"
+    predictions_path: str = "../results/predictions/yearly_multiclass_proba.csv"
+    output_dir: str = "../results/grading"
+    weights: Tuple[float, float, float, float] = (0.4, 0.3, 0.2, 0.1)
     epsilon: float = 1e-6
     target_num_grades: int = 7
     grade_labels: Optional[List[str]] = None  # default derived if None
@@ -88,9 +115,9 @@ def ensure_dir(path: str) -> None:
 
 def parse_args() -> GradingConfig:
     parser = argparse.ArgumentParser(description="KSURE Final Grading Engine (v1)")
-    parser.add_argument("--dataset_path", type=str, default="dataset/credit_risk_dataset_step4.csv")
-    parser.add_argument("--predictions_path", type=str, default="result/predictions/yearly_multiclass_proba.csv")
-    parser.add_argument("--output_dir", type=str, default="result/step10_grading")
+    parser.add_argument("--dataset_path", type=str, default="../data/processed/credit_risk_dataset_selected.csv")
+    parser.add_argument("--predictions_path", type=str, default="../results/predictions/yearly_multiclass_proba.csv")
+    parser.add_argument("--output_dir", type=str, default="../results/grading")
     parser.add_argument("--weights", type=float, nargs=4, default=[0.4, 0.3, 0.2, 0.1], help="Year weights w1 w2 w3 w4 (sum=1)")
     parser.add_argument("--epsilon", type=float, default=1e-6)
     parser.add_argument("--grades", type=str, nargs="*", default=None, help="Grade labels low-risk→high-risk (e.g., AAA AA A BBB BB B CCC)")
@@ -146,6 +173,44 @@ def read_data(cfg: GradingConfig) -> Tuple[pd.DataFrame, pd.DataFrame]:
             pass
     return df, preds
 
+def load_split_datasets_for_grading() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Load split datasets for grading with strict data separation
+    
+    Returns:
+        Tuple of (train_data, validation_data, oot_data)
+    """
+    split_dir = "data_splits"
+    
+    train_data = pd.read_csv(os.path.join(split_dir, "train_data.csv"))
+    validation_data = pd.read_csv(os.path.join(split_dir, "validation_data.csv"))
+    oot_data = pd.read_csv(os.path.join(split_dir, "oot_data.csv"))
+    
+    # Ensure date columns are datetime
+    for data in [train_data, validation_data, oot_data]:
+        if '보험청약일자' in data.columns:
+            data['보험청약일자'] = pd.to_datetime(data['보험청약일자'])
+    
+    logger.info(f"Loaded split datasets for grading:")
+    logger.info(f"  - Train: {len(train_data):,} rows")
+    logger.info(f"  - Validation: {len(validation_data):,} rows") 
+    logger.info(f"  - OOT: {len(oot_data):,} rows")
+    
+    return train_data, validation_data, oot_data
+
+def get_grade_rule_data(train_data: pd.DataFrame, validation_data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Combine train and validation data for grade rule creation
+    This follows strict validation: grade rules use TRAIN+VALIDATION only
+    """
+    rule_data = pd.concat([train_data, validation_data], ignore_index=True)
+    rule_data = rule_data.sort_values('보험청약일자').reset_index(drop=True)
+    
+    logger.info(f"Grade rule creation data: {len(rule_data):,} rows")
+    logger.info(f"  - Period: {rule_data['보험청약일자'].min()} to {rule_data['보험청약일자'].max()}")
+    
+    return rule_data
+
 
 def required_proba_columns() -> List[str]:
     cols = []
@@ -159,22 +224,24 @@ def validate_predictions(preds: pd.DataFrame, cfg: GradingConfig) -> None:
     missing = [c for c in required_proba_columns() if c not in preds.columns]
     if missing:
         raise ValueError(f"Predictions file missing required columns: {missing}")
-    if cfg.key_column not in preds.columns:
-        raise ValueError(f"Predictions file missing key column: {cfg.key_column}")
     
-    # Additional validation for composite key approach
-    if cfg.date_column in preds.columns:
-        # Check for potential composite key conflicts
-        composite_key = preds[cfg.key_column].astype(str) + '_' + preds[cfg.date_column].astype(str)
-        composite_duplicates = composite_key.duplicated(keep=False)
-        if composite_duplicates.any():
-            print(f"Warning: Composite key duplicates found. Will use row index suffix for {composite_duplicates.sum()} rows.")
+    # 🔑 SIMPLIFIED: Validate unique_id instead of complex composite key
+    if 'unique_id' not in preds.columns:
+        raise ValueError("Predictions file missing unique_id column. Please run updated pipeline.")
+    
+    # Check for unique_id duplicates (should not happen by design)
+    unique_id_duplicates = preds['unique_id'].duplicated(keep=False)
+    if unique_id_duplicates.any():
+        logger.error(f"ERROR: {unique_id_duplicates.sum()} duplicate unique_id values found in predictions!")
+        raise ValueError("unique_id duplicates detected - this should not happen")
+    else:
+        logger.info(f"unique_id validation passed: {len(preds):,} unique records")
 
 
 def validate_data_integrity(df: pd.DataFrame, preds: pd.DataFrame, cfg: GradingConfig) -> bool:
-    """Validate data integrity for composite key approach"""
-    # Check for required columns
-    if cfg.key_column not in df.columns or cfg.key_column not in preds.columns:
+    """🔑 SIMPLIFIED: Validate data integrity for unique_id approach"""
+    # Check for unique_id columns
+    if 'unique_id' not in df.columns or 'unique_id' not in preds.columns:
         return False
     
     # Check for required prediction columns
@@ -186,30 +253,28 @@ def validate_data_integrity(df: pd.DataFrame, preds: pd.DataFrame, cfg: GradingC
 
 
 def join_dataset_predictions(df: pd.DataFrame, preds: pd.DataFrame, cfg: GradingConfig) -> pd.DataFrame:
-    if cfg.key_column not in df.columns:
-        raise ValueError(f"Dataset missing key column: {cfg.key_column}")
+    """
+    🔑 SIMPLIFIED: Join using unique_id as primary key (eliminates complex composite key logic!)
+    """
+    # Check for unique_id in both dataframes
+    if 'unique_id' not in df.columns:
+        raise ValueError("unique_id column not found in dataset. Please run 1_Split.py first to generate unique IDs.")
+    if 'unique_id' not in preds.columns:
+        raise ValueError("unique_id column not found in predictions. Please run 3_Model8.py with updated data.")
     
-    # Check for duplicates in key column
-    df_duplicates = df[cfg.key_column].duplicated(keep=False)
-    preds_duplicates = preds[cfg.key_column].duplicated(keep=False)
+    logger.info(f"Using unique_id as primary key - no more complex composite key logic!")
     
-    if df_duplicates.any() or preds_duplicates.any():
-        print(f"Warning: Duplicates found in {cfg.key_column}. Using composite key approach.")
-        
-        # Create composite key with date if available
-        if cfg.date_column in df.columns and cfg.date_column in preds.columns:
-            df['temp_key'] = df[cfg.key_column].astype(str) + '_' + df[cfg.date_column].astype(str)
-            preds['temp_key'] = preds[cfg.key_column].astype(str) + '_' + preds[cfg.date_column].astype(str)
-        else:
-            # Fallback: add row index suffix for duplicates
-            df['temp_key'] = df[cfg.key_column].astype(str) + '_' + df.index.astype(str)
-            preds['temp_key'] = preds[cfg.key_column].astype(str) + '_' + preds.index.astype(str)
-        
-        merged = pd.merge(df, preds, on='temp_key', how="inner", suffixes=("", "_pred"))
-        merged = merged.drop('temp_key', axis=1)
+    # Simple, reliable merge using unique_id
+    merged = pd.merge(df, preds, on='unique_id', how="inner", suffixes=("", "_pred"))
+    
+    logger.info(f"Merged {len(df):,} dataset rows with {len(preds):,} prediction rows -> {len(merged):,} final rows")
+    
+    # With unique_id, row multiplication is impossible by design
+    if len(merged) != min(len(df), len(preds)):
+        logger.info(f"Note: Merged row count differs from input - this is expected with inner join")
+        logger.info(f"  Dataset: {len(df):,} rows, Predictions: {len(preds):,} rows, Merged: {len(merged):,} rows")
     else:
-        # Original approach when no duplicates
-        merged = pd.merge(df, preds, on=cfg.key_column, how="inner", suffixes=("", "_pred"))
+        logger.info(f"Perfect 1:1 merge - no data multiplication issues!")
     
     return merged
 
@@ -351,6 +416,48 @@ def reason_code_from_shares(row: pd.Series, threshold: float) -> str:
     if abs(s1 - s2) <= threshold:
         return f"{labels[t1]} 및 {labels[t2]} 리스크 복합"
     return f"{labels[t1]} 리스크 기여도 높음"
+
+
+# SHAP functionality removed - using feature importance instead
+
+
+def create_excel_output(assignments: pd.DataFrame, grade_stats: pd.DataFrame, 
+                       output_path: str, var_mapping: Dict[str, str] = None) -> None:
+    """
+    Create Excel file with multiple sheets for business users.
+    """
+    if not EXCEL_AVAILABLE:
+        logger.warning("Excel output skipped - openpyxl not available")
+        return
+    
+    try:
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # Sheet 1: Main predictions
+            main_cols = ['unique_id', '보험청약일자', 'final_score', 'grade', 'reason_code']
+            main_df = assignments[main_cols].copy()
+            
+            main_df.to_excel(writer, sheet_name='예측결과', index=False)
+            
+            # Sheet 2: Grade statistics
+            grade_stats.to_excel(writer, sheet_name='등급별통계', index=False)
+            
+            # Sheet 3: Usage guide
+            guide_data = {
+                '항목': ['final_score', 'grade', 'reason_code'],
+                '설명': [
+                    '0-1 스케일의 리스크 점수 (높을수록 위험)',
+                    '최종 등급 (AAA가 가장 안전, CCC가 가장 위험)',
+                    '등급 판정의 주요 근거 (시기별 기여도)'
+                ]
+            }
+            pd.DataFrame(guide_data).to_excel(writer, sheet_name='사용가이드', index=False)
+        
+        logger.info(f"Excel output created: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"Excel creation failed: {e}")
+        # Fallback to CSV
+        assignments.to_csv(output_path.replace('.xlsx', '_fallback.csv'), index=False)
 
 
 # -----------------------------
@@ -527,9 +634,9 @@ def plot_grade_distribution(assignments: pd.DataFrame, labels: List[str], output
     if "grade" not in assignments.columns or len(assignments) == 0:
         return
     try_configure_korean_font()
-    # Order grades by provided labels
-    order = [g for g in labels if g in assignments["grade"].unique().tolist()]
-    dist = assignments["grade"].value_counts().reindex(order, fill_value=0)
+    # Order grades by consistent GRADE_ORDER (safe to risky)
+    available_grades = [g for g in GRADE_ORDER if g in assignments["grade"].unique().tolist()]
+    dist = assignments["grade"].value_counts().reindex(available_grades, fill_value=0)
     total = max(int(dist.sum()), 1)
     prop = (dist / total).astype(float)
     plt.figure(figsize=(7.5, 4.5))
@@ -548,8 +655,7 @@ def plot_grade_distribution(assignments: pd.DataFrame, labels: List[str], output
 def select_weights_by_cv(dev_df: pd.DataFrame, cfg: GradingConfig) -> Tuple[float, float, float, float]:
     """
     Lean, constrained search for weights that maximize mean AUC (AR equivalent) on development rows.
-    Overfitting guard: prefer stable weights via simple penalty on std across K folds (temporal blocks by date order if available).
-    Default kept OFF; use --auto_weight_selection to enable.
+    🔄 CHANGED: Now optimizes for 1-year event prediction instead of 4-year.
     """
     # Candidate set if not provided: a small, ordered family
     candidates = cfg.candidate_weights or [
@@ -579,7 +685,7 @@ def select_weights_by_cv(dev_df: pd.DataFrame, cfg: GradingConfig) -> Tuple[floa
             h_stack = np.column_stack([sl[f"h_{t}y"].values for t in range(1, 5)])
             H = np.dot(h_stack, np.array(w, dtype=float))
             score = 1.0 - np.exp(-H)
-            y = (sl["risk_year4"].astype(float) >= 1).astype(int).values
+            y = (sl["risk_year1"].astype(float) >= 1).astype(int).values  # 🔄 CHANGED: 1-year events
             mask = ~np.isnan(y)
             if mask.sum() == 0 or len(np.unique(y[mask])) < 2:
                 continue
@@ -607,116 +713,191 @@ def main():
     ensure_dir(cfg.output_dir)
     log_lines: List[str] = []
 
-    # Read
-    df, preds = read_data(cfg)
+    # Load split datasets following strict validation rules
+    logger.info("Loading split datasets from 1_Split.py...")
+    train_data, validation_data, oot_data = load_split_datasets_for_grading()
+    
+    # Get grade rule creation data (TRAIN + VALIDATION only)
+    rule_data = get_grade_rule_data(train_data, validation_data)
+    
+    # All data for grade application
+    all_data = pd.concat([train_data, validation_data, oot_data], ignore_index=True)
+    all_data = all_data.sort_values(cfg.date_column).reset_index(drop=True)
+    
+    # Load predictions (should contain all data from Step 3)
+    preds = pd.read_csv(cfg.predictions_path)
     validate_predictions(preds, cfg)
     
-    # Validate data integrity
-    if not validate_data_integrity(df, preds, cfg):
-        raise ValueError("Data integrity validation failed. Check required columns and data format.")
-    
-    log_lines.append(f"Dataset rows: {len(df):,}; Predictions rows: {len(preds):,}")
+    log_lines.append(f"Rule creation data (Train+Validation): {len(rule_data):,} rows")
+    log_lines.append(f"All data for grade application: {len(all_data):,} rows")
+    log_lines.append(f"Predictions: {len(preds):,} rows")
 
-    # Join and prepare
-    merged = join_dataset_predictions(df, preds, cfg)
-    log_lines.append(f"Joined dataset rows: {len(merged):,}")
+    # Join rule data with predictions for grade rule creation
+    rule_merged = join_dataset_predictions(rule_data, preds, cfg)
+    
+    # Join all data with predictions for grade application
+    all_merged = join_dataset_predictions(all_data, preds, cfg)
+    
+    log_lines.append(f"Rule creation merged: {len(rule_merged):,} rows")
+    log_lines.append(f"All data merged: {len(all_merged):,} rows")
     
     # Log data integrity information
-    if cfg.key_column in merged.columns:
-        duplicates = merged[cfg.key_column].duplicated(keep=False)
+    if cfg.key_column in rule_merged.columns:
+        duplicates = rule_merged[cfg.key_column].duplicated(keep=False)
         if duplicates.any():
             log_lines.append(f"Note: {duplicates.sum():,} duplicate {cfg.key_column} values handled with composite keys")
     
-    merged = compute_event_flags(merged)
-    merged = compute_predicted_classes(merged)
+    # Process rule data for grade rule creation
+    rule_merged = compute_event_flags(rule_merged)
+    rule_merged = compute_predicted_classes(rule_merged)
+    
+    # Process all data for final grade application
+    all_merged = compute_event_flags(all_merged)
+    all_merged = compute_predicted_classes(all_merged)
 
-    # Calibration tables
-    calib_df, r_tk = compute_yearly_calibration_tables(merged, cfg)
-    log_lines.append("Per-year class-to-event calibration completed with isotonic monotonicity.")
+    # Calibration tables - use rule data only (TRAIN + VALIDATION)
+    calib_df, r_tk = compute_yearly_calibration_tables(rule_merged, cfg)
+    log_lines.append("Per-year class-to-event calibration completed with isotonic monotonicity (TRAIN+VALIDATION only).")
 
-    # p_any per year
-    merged = compute_p_any(merged, r_tk, cfg.epsilon)
+    # Apply calibration to rule data for grade rule creation
+    rule_merged = compute_p_any(rule_merged, r_tk, cfg.epsilon)
+    rule_merged = compute_hazard_and_score(rule_merged, cfg.weights, cfg.epsilon)
+    
+    # Apply same calibration to all data for grade application
+    all_merged = compute_p_any(all_merged, r_tk, cfg.epsilon)
+    all_merged = compute_hazard_and_score(all_merged, cfg.weights, cfg.epsilon)
 
-    # Base hazards using current weights for potential CV selection reuse
-    merged = compute_hazard_and_score(merged, cfg.weights, cfg.epsilon)
-
-    # Optional: simple CV-based weight selection on development subset with labels
+    # Optional: simple CV-based weight selection on rule data only (TRAIN + VALIDATION)
     if cfg.auto_weight_selection:
-        dev_mask = ~pd.isna(merged["risk_year4"])  # evaluate vs 4-year event
-        dev_df = merged.loc[dev_mask].copy()
+        dev_mask = ~pd.isna(rule_merged["risk_year1"])  # 🔄 CHANGED: evaluate vs 1-year event
+        dev_df = rule_merged.loc[dev_mask].copy()
         if len(dev_df) > 0:
             new_w = select_weights_by_cv(dev_df, cfg)
             log_lines.append(f"Auto-selected weights from candidates: old={cfg.weights} → new={new_w}")
             cfg.weights = new_w
             # recompute final_score and shares with new weights
-            merged = compute_hazard_and_score(merged, cfg.weights, cfg.epsilon)
+            rule_merged = compute_hazard_and_score(rule_merged, cfg.weights, cfg.epsilon)
+            all_merged = compute_hazard_and_score(all_merged, cfg.weights, cfg.epsilon)
         else:
             log_lines.append("Auto weight selection skipped (no labeled development rows).")
 
-    # Build supervised monotonic bins on development rows with 4y labels
-    dev_mask = ~pd.isna(merged["risk_year4"])  # only where label matured
-    dev_rows = merged.loc[dev_mask].copy()
-    y_dev = (dev_rows["risk_year4"].astype(float) >= 1).astype(int).values
+    # Build supervised monotonic bins ONLY on rule data (TRAIN + VALIDATION)
+    dev_mask = ~pd.isna(rule_merged["risk_year1"])  # 🔄 CHANGED: only where 1-year label matured
+    dev_rows = rule_merged.loc[dev_mask].copy()
+    y_dev = (dev_rows["risk_year1"].astype(float) >= 1).astype(int).values  # 🔄 CHANGED: 1-year events
     scores_dev = dev_rows["final_score"].astype(float).values
     final_bins_df, cutpoints = monotone_supervised_binning(scores_dev, y_dev, cfg)
-    log_lines.append(f"Monotonic supervised binning produced {len(cutpoints)+1} bins (target={cfg.target_num_grades}).")
+    log_lines.append(f"Monotonic supervised binning on TRAIN+VALIDATION produced {len(cutpoints)+1} bins (target={cfg.target_num_grades}).")
 
-    # Grades assignment to all rows
+    # Apply grade rules to ALL data (using cutpoints from TRAIN+VALIDATION)
     labels = cfg.grade_labels or default_grade_labels(len(cutpoints) + 1)
-    grades, bin_idx = assign_grade_from_cutpoints(merged["final_score"].astype(float).values, cutpoints, labels)
-    merged["bin_id"] = bin_idx.astype(int)
-    merged["grade"] = grades
+    grades, bin_idx = assign_grade_from_cutpoints(all_merged["final_score"].astype(float).values, cutpoints, labels)
+    all_merged["bin_id"] = bin_idx.astype(int)
+    all_merged["grade"] = grades
 
-    # Reason codes
-    merged["reason_code"] = merged.apply(lambda r: reason_code_from_shares(r, cfg.reason_merge_threshold), axis=1)
+    # Reason codes for all data
+    all_merged["reason_code"] = all_merged.apply(lambda r: reason_code_from_shares(r, cfg.reason_merge_threshold), axis=1)
+    
+    logger.info(f"Applied grades to all data:")
+    logger.info(f"  - Grade rules created from: {len(rule_merged):,} rows (TRAIN+VALIDATION)")
+    logger.info(f"  - Grades applied to: {len(all_merged):,} rows (ALL DATA)")
+    
+    # Use all_merged for final outputs (contains all data with grades)
+    merged = all_merged
 
-    # Persist outputs
-    # 1) Assignments
-    assign_cols = [cfg.key_column]
+    # SHAP contributions removed - using feature importance for interpretability
+    logger.info(f"Using feature importance for model interpretability")
+
+    # Prepare assignments data - 🔑 SIMPLIFIED: Use unique_id as primary identifier
+    assign_cols = ['unique_id']  # Primary key
     if cfg.date_column in merged.columns:
         assign_cols.append(cfg.date_column)
-    for t in range(1, 5):
-        assign_cols += [f"p_any_{t}y", f"h_{t}y", f"contrib_{t}y", f"share_{t}y"]
+    if 'data_split' in merged.columns:
+        assign_cols.append('data_split')
     assign_cols += ["final_score", "bin_id", "grade", "reason_code"]
+    
+    # SHAP top variables removed
+    
     assignments = merged[assign_cols].copy()
-    assignments_path = os.path.join(cfg.output_dir, "4_grade_assignments.csv")
+    
+    # Save CSV for compatibility
+    assignments_path = os.path.join(cfg.output_dir, "grade_assignments.csv")
     assignments.to_csv(assignments_path, index=False)
-    # Plot grade distribution
-    try:
-        plot_grade_distribution(assignments, labels, cfg.output_dir)
-    except Exception:
-        pass
 
-    # 2) Calibration tables
-    calib_path = os.path.join(cfg.output_dir, "calibration_tables.csv")
-    calib_df.to_csv(calib_path, index=False)
+    # Generate grade-level statistics for Excel
+    grade_stats_rows = []
+    total_count = len(assignments)
+    # Sort by proper grade order (safe to risky)
+    available_grades = [g for g in GRADE_ORDER if g in labels]
+    for grade in available_grades:
+        grade_data = assignments[assignments['grade'] == grade]
+        if len(grade_data) > 0:
+            grade_stats_rows.append({
+                '등급': grade,
+                '건수': len(grade_data),
+                '비율': f"{len(grade_data)/total_count*100:.1f}%",
+                '평균점수': f"{grade_data['final_score'].mean():.3f}",
+                '주요사유': grade_data['reason_code'].mode().iloc[0] if not grade_data['reason_code'].mode().empty else 'N/A'
+            })
+    
+    grade_stats_df = pd.DataFrame(grade_stats_rows)
+    
+    # Load variable mapping from Model 8
+    var_mapping = {}
+    mapping_path = "../results/step8_post/variable_mapping.json"
+    if os.path.exists(mapping_path):
+        try:
+            with open(mapping_path, "r", encoding="utf-8") as f:
+                var_mapping = json.load(f)
+        except Exception:
+            pass
+    
+    # Create Excel output (main deliverable)
+    excel_path = os.path.join(cfg.output_dir, "final_predictions.xlsx")
+    create_excel_output(assignments, grade_stats_df, excel_path, var_mapping)
+    
+    # Create business insights guide
+    insights_content = f"""# 리스크 등급 분석 결과 해석 가이드
 
-    # 3) Grade bins metadata
-    bins_meta = {
+## 등급 체계
+- **AAA, AA, A**: 우량 기업 (낮은 리스크)
+- **BBB, BB**: 보통 기업 (중간 리스크) 
+- **B, CCC**: 주의 기업 (높은 리스크)
+
+## 주요 통계
+- 전체 분석 대상: {total_count:,}개 기업
+- 우량 등급 (A 이상): {len(assignments[assignments['grade'].isin(['AAA', 'AA', 'A'])]):,}개 ({len(assignments[assignments['grade'].isin(['AAA', 'AA', 'A'])])/total_count*100:.1f}%)
+- 주의 등급 (B 이하): {len(assignments[assignments['grade'].isin(['B', 'CCC'])]):,}개 ({len(assignments[assignments['grade'].isin(['B', 'CCC'])])/total_count*100:.1f}%)
+
+## 활용 방법
+1. **등급**: 기본적인 리스크 수준 판단
+2. **이유코드**: 어느 시기의 리스크가 주요 원인인지 파악
+3. **상위 변수**: 해당 등급에 가장 큰 영향을 준 요인들
+
+## 문의사항
+상세한 분석이나 해석이 필요한 경우 데이터분석팀으로 연락 바랍니다.
+"""
+    
+    with open(os.path.join(cfg.output_dir, "business_insights.md"), "w", encoding="utf-8") as f:
+        f.write(insights_content)
+    
+    # Simplified metadata (essential only)
+    essential_meta = {
         "execution_date": datetime.now().isoformat(),
-        "cutpoints": cutpoints,  # ascending right edges
-        "num_bins": len(cutpoints) + 1,
-        "labels": labels,
-        "final_bins_table": final_bins_df.to_dict(orient="records"),
+        "total_predictions": total_count,
+        "grade_distribution": {row['등급']: row['건수'] for row in grade_stats_rows},
+        "cutpoints": cutpoints,
+        "labels": available_grades,  # Use ordered grades
     }
-    with open(os.path.join(cfg.output_dir, "grade_bins.json"), "w", encoding="utf-8") as f:
-        json.dump(bins_meta, f, indent=2, ensure_ascii=False)
+    
+    with open(os.path.join(cfg.output_dir, "grade_summary.json"), "w", encoding="utf-8") as f:
+        json.dump(essential_meta, f, indent=2, ensure_ascii=False)
 
-    # 4) Config snapshot
-    cfg_meta = asdict(cfg)
-    with open(os.path.join(cfg.output_dir, "config_used.json"), "w", encoding="utf-8") as f:
-        json.dump(cfg_meta, f, indent=2, ensure_ascii=False)
-
-    # 5) Log
-    log_lines.insert(0, f"KSURE Grading Engine v1 | {datetime.now().isoformat()}")
-    with open(os.path.join(cfg.output_dir, "log.txt"), "w", encoding="utf-8") as f:
-        for line in log_lines:
-            f.write(line + "\n")
-
-    print(f"✅ Grading completed: {assignments_path}")
-    print(f"   Calibration tables: {calib_path}")
-    print(f"   Bins meta: {os.path.join(cfg.output_dir, 'grade_bins.json')}")
-    print(f"   Config snapshot: {os.path.join(cfg.output_dir, 'config_used.json')}")
+    logger.info(f"Grading completed successfully!")
+    logger.info(f"  Excel 결과물: {excel_path}")
+    logger.info(f"  CSV 호환성: {assignments_path}")
+    logger.info(f"  해석 가이드: business_insights.md")
+    logger.info(f"  등급 요약: grade_summary.json")
 
 
 if __name__ == "__main__":

@@ -1,21 +1,20 @@
 """
-XGBoost Risk Prediction Model - Step 3: Comprehensive Exploratory Data Analysis (EDA)
-==================================================================================
+XGBoost Risk Prediction Model - Step 1: Comprehensive Exploratory Data Analysis (EDA)
+====================================================================================
 
-Step 3 Implementation:
+Step 1 Implementation (EDA FOCUS):
 - Data Quality Analysis: Missing patterns, outliers, data types
-- Temporal Patterns: Distribution changes over time, seasonality
-- Target Variable Analysis: Class distribution over time, business cycles impact
-- Feature Relationships: Correlation analysis, feature distributions by target class
+- Target Variable Analysis: Class distribution, business patterns
+- Feature Relationships: Correlation analysis, feature distributions
 - Business Logic Validation: Do the data patterns make business sense?
-- Data Leakage Investigation: Identify potentially problematic features
-- Goal: Deep understanding of data characteristics to inform all subsequent decisions
+- Goal: Deep understanding of data characteristics to inform modeling decisions
 
 Design Focus:
-- Comprehensive analysis without including previous/future steps
+- Comprehensive analysis supporting step1_train.py and step1_evaluate.py
 - Business-focused insights and interpretations
 - Korean font support for visualizations
 - Systematic approach to data understanding
+- Foundation for informed feature engineering and model selection
 """
 
 import pandas as pd
@@ -28,7 +27,15 @@ import matplotlib.font_manager as fm
 import os
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
+import logging
 warnings.filterwarnings('ignore')
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Configure matplotlib for non-interactive backend
 import matplotlib
@@ -100,15 +107,14 @@ def safe_json_serialize(obj):
 
 class ComprehensiveEDA:
     """
-    Step 3: Comprehensive Exploratory Data Analysis for Risk Prediction
+    Step 1: Comprehensive Exploratory Data Analysis for Risk Prediction
     
     Provides deep understanding of data characteristics through:
     - Data quality analysis
-    - Temporal pattern analysis
     - Target variable analysis
     - Feature relationship analysis
     - Business logic validation
-    - Data leakage investigation
+    - Foundation for informed modeling decisions
     """
     
     def __init__(self, config: Dict):
@@ -142,7 +148,7 @@ class ComprehensiveEDA:
     
     def _create_results_directory(self) -> str:
         """Create results directory for saving outputs"""
-        results_dir = "result/step3_eda"
+        results_dir = "../results/step1_eda"
         
         os.makedirs(results_dir, exist_ok=True)
         
@@ -297,12 +303,10 @@ class ComprehensiveEDA:
         
         return quality_summary
     
-    # Removed temporal analysis per updated Step 3 scope in prompt.txt
-    
     def analyze_target_variables(self):
         """Comprehensive target variable analysis"""
         print("\n" + "="*60)
-        print("4️⃣ TARGET VARIABLE ANALYSIS")
+        print("3️⃣ TARGET VARIABLE ANALYSIS")
         print("="*60)
         
         target_analysis = {}
@@ -348,7 +352,10 @@ class ComprehensiveEDA:
                        f'{percentage:.1f}%', ha='center', va='bottom', fontsize=9)
         
         plt.tight_layout()
-        self._save_plot("03_target_distributions", 'target_analysis')
+        self._save_plot("02_target_distributions", 'target_analysis')
+        
+        # Create class imbalance analysis
+        self._analyze_class_imbalance()
         
         # Save target analysis
         import json
@@ -357,10 +364,73 @@ class ComprehensiveEDA:
         
         return target_analysis
     
+    def _analyze_class_imbalance(self):
+        """Analyze class imbalance patterns across targets"""
+        print("\n📊 CLASS IMBALANCE ANALYSIS")
+        
+        imbalance_data = []
+        for target in self.target_columns:
+            target_data = self.data[target].dropna()
+            if len(target_data) > 0:
+                value_counts = target_data.value_counts().sort_index()
+                total = len(target_data)
+                
+                # Calculate imbalance metrics
+                majority_class = value_counts.max()
+                minority_class = value_counts.min()
+                imbalance_ratio = majority_class / minority_class
+                
+                # High-risk (classes 2,3) vs low-risk (classes 0,1) ratio
+                high_risk_count = value_counts.get(2, 0) + value_counts.get(3, 0)
+                low_risk_count = value_counts.get(0, 0) + value_counts.get(1, 0)
+                high_risk_ratio = high_risk_count / total * 100
+                
+                imbalance_data.append({
+                    'target': target,
+                    'total_samples': total,
+                    'majority_class_count': majority_class,
+                    'minority_class_count': minority_class,
+                    'imbalance_ratio': imbalance_ratio,
+                    'high_risk_percentage': high_risk_ratio,
+                    'class_distribution': dict(value_counts)
+                })
+                
+                print(f"   • {target}: {high_risk_ratio:.1f}% high-risk, imbalance ratio: {imbalance_ratio:.1f}")
+        
+        # Visualize class imbalance
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        fig.suptitle('Class Imbalance Analysis Across Targets', fontsize=16, fontweight='bold')
+        
+        # High-risk percentage
+        targets = [item['target'] for item in imbalance_data]
+        high_risk_pcts = [item['high_risk_percentage'] for item in imbalance_data]
+        
+        ax1.bar(targets, high_risk_pcts, alpha=0.7, color='red')
+        ax1.set_title('High-Risk Percentage by Target')
+        ax1.set_ylabel('High-Risk Percentage (%)')
+        ax1.tick_params(axis='x', rotation=45)
+        ax1.grid(True, alpha=0.3)
+        
+        # Imbalance ratios
+        imbalance_ratios = [item['imbalance_ratio'] for item in imbalance_data]
+        ax2.bar(targets, imbalance_ratios, alpha=0.7, color='orange')
+        ax2.set_title('Class Imbalance Ratio (Majority/Minority)')
+        ax2.set_ylabel('Imbalance Ratio')
+        ax2.tick_params(axis='x', rotation=45)
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        self._save_plot("03_class_imbalance", 'target_analysis')
+        
+        # Save imbalance analysis
+        imbalance_df = pd.DataFrame(imbalance_data)
+        imbalance_df.to_csv(os.path.join(self.results_dir, 'target_analysis', 'class_imbalance.csv'), 
+                           index=False, encoding='utf-8-sig')
+    
     def analyze_feature_relationships(self):
         """Analyze feature relationships and correlations"""
         print("\n" + "="*60)
-        print("5️⃣ FEATURE RELATIONSHIP ANALYSIS")
+        print("4️⃣ FEATURE RELATIONSHIP ANALYSIS")
         print("="*60)
         
         # Correlation analysis
@@ -398,7 +468,7 @@ class ComprehensiveEDA:
         
         # Create correlation heatmap (sample columns for efficiency)
         plt.figure(figsize=(16, 12))
-        max_cols_for_heatmap = 60
+        max_cols_for_heatmap = 50
         cols_for_plot = (
             correlation_matrix.columns[:max_cols_for_heatmap]
             if len(correlation_matrix.columns) > max_cols_for_heatmap
@@ -413,13 +483,13 @@ class ComprehensiveEDA:
         self._save_plot("04_correlation_heatmap", 'feature_analysis')
         
         # Feature importance by target class
-        print("\n🎯 FEATURE IMPORTANCE BY TARGET CLASS")
+        print("\n🎯 FEATURE-TARGET CORRELATION ANALYSIS")
         
-        feature_importance_by_target = {}
+        feature_target_correlation = {}
         
         for target in self.target_columns:
             target_data = self.data[target].dropna()
-            feature_importance = {}
+            feature_correlations = {}
             
             for feature in numeric_features.columns:
                 feature_data = self.data[feature].dropna()
@@ -433,29 +503,249 @@ class ComprehensiveEDA:
                     # Calculate correlation with target
                     correlation = aligned_target.corr(aligned_feature)
                     if not pd.isna(correlation):
-                        feature_importance[feature] = abs(correlation)
+                        feature_correlations[feature] = abs(correlation)
             
             # Sort by importance
-            feature_importance = dict(sorted(feature_importance.items(), 
+            feature_correlations = dict(sorted(feature_correlations.items(), 
                                            key=lambda x: x[1], reverse=True))
-            feature_importance_by_target[target] = feature_importance
+            feature_target_correlation[target] = feature_correlations
+            
+            print(f"   • {target}: Top correlation = {max(feature_correlations.values()):.4f}")
+        
+        # Create feature-target correlation visualization
+        self._visualize_feature_target_correlations(feature_target_correlation)
         
         # Save feature importance analysis
         import json
-        with open(os.path.join(self.results_dir, 'feature_analysis', 'feature_importance.json'), 'w', encoding='utf-8') as f:
-            json.dump(safe_json_serialize(feature_importance_by_target), f, indent=2, ensure_ascii=False)
+        with open(os.path.join(self.results_dir, 'feature_analysis', 'feature_target_correlations.json'), 'w', encoding='utf-8') as f:
+            json.dump(safe_json_serialize(feature_target_correlation), f, indent=2, ensure_ascii=False)
         
-        return feature_importance_by_target
+        return feature_target_correlation
     
-    # Removed business logic validation per updated Step 3 scope
+    def _visualize_feature_target_correlations(self, correlations: Dict):
+        """Visualize top feature-target correlations"""
+        
+        # Get top features across all targets
+        all_correlations = {}
+        for target, feature_corrs in correlations.items():
+            for feature, corr in feature_corrs.items():
+                if feature not in all_correlations:
+                    all_correlations[feature] = []
+                all_correlations[feature].append(corr)
+        
+        # Calculate average correlation
+        avg_correlations = {
+            feature: np.mean(corrs) 
+            for feature, corrs in all_correlations.items()
+        }
+        
+        # Get top 20 features
+        top_features = dict(sorted(avg_correlations.items(), key=lambda x: x[1], reverse=True)[:20])
+        
+        # Create visualization
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+        fig.suptitle('Feature-Target Correlation Analysis', fontsize=16, fontweight='bold')
+        
+        # Average correlations
+        ax1.barh(list(top_features.keys()), list(top_features.values()), alpha=0.7)
+        ax1.set_title('Top 20 Features - Average |Correlation| with Targets')
+        ax1.set_xlabel('Average |Correlation|')
+        ax1.grid(True, alpha=0.3)
+        
+        # Per-target correlations for top features
+        top_feature_names = list(top_features.keys())[:10]  # Top 10 for readability
+        correlation_matrix_data = []
+        
+        for target in self.target_columns:
+            target_corrs = []
+            for feature in top_feature_names:
+                corr = correlations[target].get(feature, 0)
+                target_corrs.append(corr)
+            correlation_matrix_data.append(target_corrs)
+        
+        correlation_matrix_df = pd.DataFrame(
+            correlation_matrix_data, 
+            index=self.target_columns, 
+            columns=top_feature_names
+        )
+        
+        sns.heatmap(correlation_matrix_df, annot=True, fmt='.3f', cmap='viridis', ax=ax2)
+        ax2.set_title('Top 10 Features - Correlation by Target')
+        ax2.set_xlabel('Features')
+        ax2.set_ylabel('Targets')
+        
+        plt.tight_layout()
+        self._save_plot("05_feature_target_correlations", 'feature_analysis')
     
-    # Removed data leakage investigation per updated Step 3 scope
+    def analyze_feature_distributions(self):
+        """Analyze feature distributions by risk level"""
+        print("\n" + "="*60)
+        print("5️⃣ FEATURE DISTRIBUTION ANALYSIS")
+        print("="*60)
+        
+        # Select top correlated features for distribution analysis
+        numeric_features = self.data[self.feature_columns].select_dtypes(include=[np.number])
+        
+        # Get top features that correlate with any target
+        top_features = []
+        for target in self.target_columns:
+            target_data = self.data[target].dropna()
+            
+            for feature in numeric_features.columns[:20]:  # Check top 20 numeric features
+                feature_data = self.data[feature].dropna()
+                common_indices = target_data.index.intersection(feature_data.index)
+                
+                if len(common_indices) > 50:
+                    aligned_target = target_data.loc[common_indices]
+                    aligned_feature = feature_data.loc[common_indices]
+                    correlation = aligned_target.corr(aligned_feature)
+                    
+                    if not pd.isna(correlation) and abs(correlation) > 0.1:
+                        top_features.append((feature, abs(correlation)))
+        
+        # Get unique top features
+        unique_features = list(set([f[0] for f in top_features]))[:8]  # Top 8 for visualization
+        
+        if len(unique_features) > 0:
+            print(f"   • Analyzing distributions for {len(unique_features)} top features...")
+            
+            # Create distribution plots
+            fig, axes = plt.subplots(2, 4, figsize=(20, 10))
+            fig.suptitle('Feature Distributions by Risk Level', fontsize=16, fontweight='bold')
+            axes = axes.flatten()
+            
+            for i, feature in enumerate(unique_features):
+                if i >= 8:
+                    break
+                
+                ax = axes[i]
+                
+                # Combine all targets for this analysis
+                combined_data = []
+                for target in self.target_columns:
+                    target_data = self.data[target].dropna()
+                    feature_data = self.data[feature].dropna()
+                    common_indices = target_data.index.intersection(feature_data.index)
+                    
+                    if len(common_indices) > 10:
+                        for risk_level in [0, 1, 2, 3]:
+                            risk_mask = target_data.loc[common_indices] == risk_level
+                            if risk_mask.sum() > 0:
+                                values = feature_data.loc[common_indices[risk_mask]]
+                                for val in values:
+                                    combined_data.append({'feature_value': val, 'risk_level': risk_level})
+                
+                if combined_data:
+                    dist_df = pd.DataFrame(combined_data)
+                    
+                    # Create box plot
+                    sns.boxplot(data=dist_df, x='risk_level', y='feature_value', ax=ax)
+                    ax.set_title(f'{feature}', fontsize=10)
+                    ax.set_xlabel('Risk Level')
+                    ax.set_ylabel('Feature Value')
+                    ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            self._save_plot("06_feature_distributions", 'feature_analysis')
+        
+        print(f"   ✅ Feature distribution analysis completed")
     
-    # Removed comprehensive report generation per updated Step 3 scope
+    def generate_eda_summary(self):
+        """Generate comprehensive EDA summary report"""
+        print("\n" + "="*60)
+        print("6️⃣ EDA SUMMARY REPORT GENERATION")
+        print("="*60)
+        
+        # Collect key findings
+        summary = {
+            'eda_timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'dataset_overview': {
+                'total_records': len(self.data),
+                'total_features': len(self.feature_columns),
+                'target_variables': len(self.target_columns),
+                'missing_data_percentage': float((self.data.isnull().sum().sum() / self.data.size) * 100)
+            },
+            'data_quality_insights': {
+                'columns_with_missing_data': int((self.data.isnull().sum() > 0).sum()),
+                'average_missing_rate': float(self.data.isnull().sum().mean() / len(self.data) * 100),
+                'data_types': dict(self.data.dtypes.value_counts())
+            },
+            'target_analysis_insights': {},
+            'key_findings': [],
+            'recommendations_for_modeling': []
+        }
+        
+        # Target analysis insights
+        for target in self.target_columns:
+            target_data = self.data[target].dropna()
+            if len(target_data) > 0:
+                value_counts = target_data.value_counts().sort_index()
+                high_risk_pct = (value_counts.get(2, 0) + value_counts.get(3, 0)) / len(target_data) * 100
+                
+                summary['target_analysis_insights'][target] = {
+                    'sample_size': len(target_data),
+                    'high_risk_percentage': float(high_risk_pct),
+                    'class_distribution': dict(value_counts),
+                    'missing_percentage': float(self.data[target].isnull().sum() / len(self.data) * 100)
+                }
+        
+        # Key findings
+        avg_high_risk = np.mean([
+            insights['high_risk_percentage'] 
+            for insights in summary['target_analysis_insights'].values()
+        ])
+        
+        summary['key_findings'] = [
+            f"Dataset contains {len(self.data):,} records with {len(self.feature_columns)} features",
+            f"Average high-risk percentage across targets: {avg_high_risk:.1f}%",
+            f"Missing data affects {summary['data_quality_insights']['columns_with_missing_data']} columns",
+            f"Class imbalance is present - high-risk cases are minority class",
+            "Feature correlations show potential for predictive modeling",
+            "Multiple data types present requiring appropriate preprocessing"
+        ]
+        
+        # Modeling recommendations
+        summary['recommendations_for_modeling'] = [
+            "Handle class imbalance using appropriate techniques (SMOTE, class weights)",
+            "Consider ensemble methods to leverage different algorithm strengths",
+            "Implement robust missing value imputation strategies",
+            "Use cross-validation with stratification for reliable performance estimation",
+            "Focus on recall for high-risk classes (business priority)",
+            "Consider feature selection based on correlation analysis",
+            "Implement temporal validation if time-based patterns exist",
+            "Monitor model performance across different risk levels"
+        ]
+        
+        # Save EDA summary
+        import json
+        summary_path = os.path.join(self.results_dir, 'eda_summary_report.json')
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(safe_json_serialize(summary), f, indent=2, ensure_ascii=False)
+        
+        print(f"✅ EDA summary report saved: eda_summary_report.json")
+        
+        # Print executive summary
+        print(f"\n📋 EDA EXECUTIVE SUMMARY:")
+        print("=" * 60)
+        print(f"📅 Analysis Date: {summary['eda_timestamp']}")
+        print(f"📊 Dataset: {summary['dataset_overview']['total_records']:,} records, {summary['dataset_overview']['total_features']} features")
+        print(f"🎯 Targets: {len(self.target_columns)} risk prediction variables")
+        print(f"⚠️  Missing Data: {summary['dataset_overview']['missing_data_percentage']:.1f}% overall")
+        print(f"🚨 High-Risk Rate: {avg_high_risk:.1f}% average across targets")
+        
+        print(f"\n🔍 KEY INSIGHTS:")
+        for finding in summary['key_findings']:
+            print(f"• {finding}")
+        
+        print(f"\n💡 MODELING RECOMMENDATIONS:")
+        for rec in summary['recommendations_for_modeling'][:5]:  # Show top 5
+            print(f"• {rec}")
+        
+        return summary
     
-    def run_step3_eda(self):
-        """Execute complete Step 3 EDA pipeline"""
-        print("🔍 EXECUTING STEP 3: COMPREHENSIVE EXPLORATORY DATA ANALYSIS")
+    def run_eda_pipeline(self):
+        """Execute complete EDA pipeline"""
+        print("🔍 EXECUTING STEP 1: COMPREHENSIVE EXPLORATORY DATA ANALYSIS")
         print("=" * 70)
         
         try:
@@ -471,40 +761,51 @@ class ComprehensiveEDA:
             # Step 4: Feature relationship analysis
             self.analyze_feature_relationships()
             
-            print("\n🎉 STEP 3 COMPLETED SUCCESSFULLY!")
+            # Step 5: Feature distribution analysis
+            self.analyze_feature_distributions()
+            
+            # Step 6: Generate EDA summary
+            self.generate_eda_summary()
+            
+            print("\n🎉 STEP 1 EDA COMPLETED SUCCESSFULLY!")
             print("✅ Comprehensive data understanding achieved")
-            print("✅ Ready for informed modeling decisions")
+            print("✅ Modeling insights generated")
+            print("✅ Ready to inform step1_train.py and step1_evaluate.py")
             
             # Print results summary
             self._print_results_summary()
             
         except Exception as e:
-            print(f"\n❌ STEP 3 FAILED: {e}")
+            print(f"\n❌ STEP 1 EDA FAILED: {e}")
             raise
     
     def _print_results_summary(self):
         """Print summary of all generated files and outputs"""
-        print(f"\n📁 RESULTS SUMMARY:")
+        print(f"\n📁 EDA RESULTS SUMMARY:")
         print(f"   All outputs saved to: {self.results_dir}")
-        print(f"   📊 Data Quality:")
+        print(f"   📊 Data Quality Analysis:")
         print(f"      • missing_value_analysis.csv")
         print(f"      • outlier_analysis.csv")
         print(f"      • quality_summary.json")
         print(f"   🎯 Target Analysis:")
         print(f"      • target_analysis.json")
+        print(f"      • class_imbalance.csv")
         print(f"   🔗 Feature Analysis:")
         print(f"      • correlation_matrix.csv")
         print(f"      • high_correlations.csv")
-        print(f"      • feature_importance.json")
+        print(f"      • feature_target_correlations.json")
         print(f"   📊 Visualizations:")
-        print(f"      • missing value heatmap, correlation heatmap, target distributions")
-        print(f"\n💡 Use these insights to inform Steps 4-7!")
+        print(f"      • missing value patterns, target distributions")
+        print(f"      • correlation heatmaps, feature distributions")
+        print(f"   📄 Summary Report:")
+        print(f"      • eda_summary_report.json")
+        print(f"\n💡 Use these insights to guide step1_train.py modeling decisions!")
 
 
-def get_step3_config():
-    """Configuration for Step 3 EDA"""
+def get_eda_config():
+    """Configuration for Step 1 EDA"""
     return {
-        'data_path': 'dataset/credit_risk_dataset.csv',
+        'data_path': '../data/processed/credit_risk_dataset.csv',
         'exclude_columns': [
             '사업자등록번호',
             '대상자명',
@@ -519,16 +820,15 @@ def get_step3_config():
 
 # Main execution
 if __name__ == "__main__":
-    
-    print("🔍 Starting XGBoost Risk Prediction Model - Step 3")
+    print("🔍 Starting Comprehensive EDA - Step 1")
     print("="*60)
     
     # Get configuration
-    config = get_step3_config()
+    config = get_eda_config()
     
     # Create and run EDA framework
     eda = ComprehensiveEDA(config)
-    eda.run_step3_eda()
+    eda.run_eda_pipeline()
     
-    print("\n🏁 Step 3 execution completed!")
-    print("Ready to proceed to Step 4: Feature Refinement and Selection")   
+    print("\n🏁 Step 1 EDA execution completed!")
+    print("Ready to support step1_train.py and step1_evaluate.py with data insights!")

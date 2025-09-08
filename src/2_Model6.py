@@ -1,15 +1,15 @@
 """
-XGBoost Risk Prediction Model - Step 7: Model Architecture Experiments (Two-Phase)
+XGBoost Risk Prediction Model - Step 6: Model Architecture Experiments (Two-Phase)
 ==================================================================================
 
-Step 7 Implementation - Interpretable & Structured:
-1. Phase 1: Unified vs Individual Models (both reuse Step 6 handling: class-balanced sample weights; argmax)
+Step 6 Implementation - Interpretable & Structured:
+1. Phase 1: Unified vs Individual Models (both reuse Step 5 handling: class-balanced sample weights; argmax)
 2. Phase 2: Best-of-Phase1 vs Ordinal Score + Fixed Cutpoints (interpretable; training-only OOF cutpoints)
 
 Design Focus:
 - Use Step 4 optimized features
-- Use Step 5 Rolling Window CV for temporal robustness
-- Apply Step 6 handling consistently for Phase 1
+- Use Step 4 Rolling Window CV for temporal robustness
+- Apply Step 5 handling consistently for Phase 1
 - No cascade, no ensembles
 - Interpretability via single models and three numeric cutpoints for ordinal
  - Focus on high-risk recall, macro F1, balanced accuracy, kappa, high-risk PR-AUC, stability
@@ -28,6 +28,14 @@ from sklearn.metrics import (
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 import platform
 import matplotlib.font_manager as fm
 warnings.filterwarnings('ignore')
@@ -79,13 +87,13 @@ setup_korean_font()
 plt.style.use('default')
 sns.set_palette("husl")
 
-def load_step4_data():
-    """Load Step 4 optimized data with proper temporal sorting"""
-    print("🚀 MODEL ARCHITECTURE EXPERIMENTS - STEP 7")
+def load_selected_data():
+    """Load Step 2 optimized data with proper temporal sorting"""
+    print("🚀 MODEL ARCHITECTURE EXPERIMENTS - STEP 6")
     print("=" * 70)
     
-    df = pd.read_csv('dataset/credit_risk_dataset_step4.csv')
-    print(f"✅ Step 4 dataset loaded: {df.shape}")
+    df = pd.read_csv('dataset/credit_risk_dataset_selected.csv')
+    print(f"✅ Step 2 dataset loaded: {df.shape}")
     
     # Sort by 보험청약일자 for temporal validation
     if '보험청약일자' in df.columns:
@@ -501,12 +509,12 @@ def select_overall_stage1_winner(unified_results: dict, individual_results: dict
 
 # Removed unused comparisons to streamline per-user request
 
-def save_step7_results(phase1_results, phase2_results, final_selection):
-    """Save comprehensive Step 7 results (simplified)."""
-    print(f"\n💾 Saving Step 7 Results")
+def save_step6_results(phase1_results, phase2_results, final_selection):
+    """Save comprehensive Step 6 results (simplified)."""
+    print(f"\n💾 Saving Step 6 Results")
     print("-" * 30)
     
-    results_dir = 'result/step7_model_architecture'
+    results_dir = 'result/step6_model_architecture'
     os.makedirs(results_dir, exist_ok=True)
     
     # Save detailed results
@@ -517,7 +525,7 @@ def save_step7_results(phase1_results, phase2_results, final_selection):
         'execution_date': datetime.now().isoformat()
     }
     
-    with open(f'{results_dir}/step7_results.json', 'w', encoding='utf-8') as f:
+    with open(f'{results_dir}/step6_results.json', 'w', encoding='utf-8') as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False, default=str)
     
     # Create summary
@@ -537,16 +545,16 @@ def save_step7_results(phase1_results, phase2_results, final_selection):
         'selection_policy': 'Stage1: Unified vs Individual; Stage2: Best-of-Stage1 vs Ordinal score + fixed cutpoints',
         'final_selection': final_selection,
         'key_components': {
-            'step4_features': 'Optimized features',
-            'step5_validation': 'Rolling Window CV',
-            'step6_handling': 'Class-balanced weights (argmax) for Phase 1',
+            'step2_features': 'Optimized features',
+            'step3_validation': 'Rolling Window CV',
+            'step5_handling': 'Class-balanced weights (argmax) for Phase 1',
             'ordinal_process': 'Single regressor with training-only OOF cutpoints; interpretable'
         },
         # Note: For ordinal, probability-based metrics may be unavailable
         'evaluation_metrics': ['high_risk_recall', 'f1_macro', 'balanced_accuracy', 'cohen_kappa', 'high_risk_pr_auc', 'stability']
     }
     
-    with open(f'{results_dir}/step7_summary.json', 'w', encoding='utf-8') as f:
+    with open(f'{results_dir}/step6_summary.json', 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
     
     print(f"✅ Results saved to: {results_dir}")
@@ -630,18 +638,18 @@ def create_stage_visualizations(phase1_results: dict, phase2_results: dict, resu
         print("⚠️ No Stage 2 data to plot")
 
 def main():
-    """Main execution - Step 7 (Two-Phase): Unified vs Individual; Best-of-Stage1 vs Ordinal"""
-    print("🚀 STEP 7: MODEL ARCHITECTURE (TWO-PHASE)")
+    """Main execution - Step 6 (Two-Phase): Unified vs Individual; Best-of-Stage1 vs Ordinal"""
+    print("🚀 STEP 6: MODEL ARCHITECTURE (TWO-PHASE)")
     print("=" * 60)
     
     # Load Step 4 data
-    df, X, y, exclude_cols, target_cols = load_step4_data()
+    df, X, y, exclude_cols, target_cols = load_selected_data()
     
     print(f"📊 Testing Phase 1 and Phase 2 across {len(target_cols)} targets")
     print(f"🎯 Targets: {target_cols}")
     print(f"📈 Features: {X.shape[1]}")
-    print(f"📅 Using Rolling Window CV (Step 5)")
-    print(f"⚖️ Phase 1 uses Step 6 handling (class weights; argmax)")
+    print(f"📅 Using Rolling Window CV (Step 3)")
+    print(f"⚖️ Phase 1 uses Step 3 handling (class weights; argmax)")
     print(f"📏 Phase 2 Ordinal: single regressor + fixed cutpoints (training-only OOF)")
     
     # Phase 1: Unified vs Individual
@@ -684,10 +692,10 @@ def main():
         final_selection[t] = {'winner': 'ordinal' if ord_key > base_key else 'best_of_stage1', 'metrics': om if ord_key > base_key else bm}
 
     # Save results & visuals
-    results_dir = save_step7_results(phase1_results, phase2_results, final_selection)
+    results_dir = save_step6_results(phase1_results, phase2_results, final_selection)
     create_stage_visualizations(phase1_results, phase2_results, results_dir)
     
-    print(f"\n🎉 STEP 7 COMPLETED!")
+    print(f"\n🎉 STEP 6 COMPLETED!")
     print("=" * 60)
     print("✅ Phase 1: Unified vs Individual evaluated")
     print("✅ Phase 2: Best-of-Stage1 vs Ordinal evaluated")

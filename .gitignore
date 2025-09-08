@@ -1,7 +1,6 @@
 # Dataset files (too large for GitHub)
-dataset/
-result/
-outputs/
+data/
+results/
 trashcan/
 sql/
 

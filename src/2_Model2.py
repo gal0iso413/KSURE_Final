@@ -1,12 +1,12 @@
 """
-XGBoost Risk Prediction Model - Step 4: Feature Refinement and Selection
+XGBoost Risk Prediction Model - Step 2: Feature Refinement and Selection
 =======================================================================
 
-Step 4 Implementation - SIMPLE, DATA-DRIVEN APPROACH:
+Step 2 Implementation - SIMPLE, DATA-DRIVEN APPROACH:
 1. Correlation analysis (>0.9 threshold, configurable)
 2. Variance threshold (remove <0.001 variance, configurable)
 3. Missing value patterns (remove >50% missing, configurable)
-4. XGBoost importance ranking + top-% grid [20, 40, 60, 80, 100] on a single 80/20 holdout
+4. XGBoost importance ranking + top-% grid [20, 40, 60, 80, 100] on a multiple 80/20 holdout
 
 Design Focus:
 - Clean, simple implementation
@@ -22,6 +22,7 @@ import xgboost as xgb
 import json
 import os
 from datetime import datetime
+from typing import Optional
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 from sklearn.model_selection import train_test_split
@@ -30,10 +31,18 @@ import seaborn as sns
 import matplotlib.font_manager as fm
 import platform
 import warnings
+import logging
 warnings.filterwarnings('ignore')
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Configure matplotlib for Korean fonts
-def setup_korean_font():
+def setup_korean_font() -> Optional[str]:
     """Set up Korean font for matplotlib visualizations"""
     system = platform.system()
     
@@ -66,33 +75,55 @@ plt.style.use('default')
 sns.set_palette("husl")
 
 def load_data():
-    """Load and prepare data"""
-    print("🚀 FEATURE REDUCTION PIPELINE")
-    print("=" * 50)
-    print("📂 Loading Dataset")
-    print("-" * 30)
+    """
+    🔄 FIXED: Load ONLY TRAIN data for feature selection (no data leakage!)
+    This ensures feature selection rules are created without seeing validation/OOT data.
+    """
+    logger.info("FEATURE REDUCTION PIPELINE - STRICT DATA SEPARATION")
+    logger.info("Loading TRAIN DATA ONLY (No Leakage!)")
     
-    # Load dataset
-    df = pd.read_csv('dataset/credit_risk_dataset.csv')
-    print(f"✅ Dataset loaded: {df.shape}")
+    # 🔄 CRITICAL CHANGE: Load ONLY train data for feature selection
+    try:
+        train_df = pd.read_csv('../data/splits/train_data.csv')
+        logger.info(f"TRAIN dataset loaded: {train_df.shape}")
+        logger.info(f"   Period: {train_df['보험청약일자'].min()} to {train_df['보험청약일자'].max()}")
+        
+        # Also load validation and OOT for applying the same feature selection rules
+        validation_df = pd.read_csv('../data/splits/validation_data.csv')
+        oot_df = pd.read_csv('../data/splits/oot_data.csv')
+        
+        logger.info(f"Data splits loaded:")
+        logger.info(f"   - TRAIN: {len(train_df):,} rows (for feature selection rules)")
+        logger.info(f"   - VALIDATION: {len(validation_df):,} rows (for rule application)")
+        print(f"   - OOT: {len(oot_df):,} rows (for rule application)")
+        
+        # Combine all data for final dataset creation (but selection rules from TRAIN only)
+        df_complete = pd.concat([train_df, validation_df, oot_df], ignore_index=True)
+        
+    except FileNotFoundError:
+        print("❌ ERROR: Split datasets not found!")
+        print("   Please run '1_Split.py' first to create train/validation/oot splits")
+        raise FileNotFoundError("Run 1_Split.py first to create proper data splits")
     
-    # Define exclude columns (matching step3.py)
+    # Define exclude columns (matching strict pipeline)
     exclude_cols = [
-        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1', 'unique_id', 'data_split'
     ]
     
-    # Separate features and targets
-    target_cols = [col for col in df.columns if col.startswith('risk_year')]
-    feature_cols = [col for col in df.columns if col not in target_cols + exclude_cols]
+    # Separate features and targets (use TRAIN data for feature selection rules)
+    target_cols = [col for col in train_df.columns if col.startswith('risk_year')]
+    feature_cols = [col for col in train_df.columns if col not in target_cols + exclude_cols]
     
     print(f"📋 Excluded columns: {len(exclude_cols)}")
     print(f"🎯 Target columns: {len(target_cols)}")
     print(f"📊 Features: {len(feature_cols)}")
+    print(f"⚠️  IMPORTANT: Feature selection rules based on TRAIN data only!")
     
-    X = df[feature_cols]
-    y = df[target_cols]
+    # Use TRAIN data for feature selection
+    X_train = train_df[feature_cols]
+    y_train = train_df[target_cols]
     
-    return df, X, y, exclude_cols, target_cols
+    return df_complete, X_train, y_train, exclude_cols, target_cols
 
 def audit_non_numeric_columns(X: pd.DataFrame, exclude_cols: list):
     """Identify non-numeric columns that are not part of exclude columns.
@@ -247,17 +278,20 @@ def step4_xgboost_importance(X, y, keep_percentage=60):
     """Step 4: XGBoost feature importance selection via top-% grid on a single holdout."""
     return step4_xgboost_top_percent_grid(X, y, candidate_percents=[20, 40, 60, 80, 100])
 
-def step4_xgboost_top_percent_grid(X, y, candidate_percents=None):
-    """Evaluate top-% grid across all available risk targets (1~4) using a single stratified holdout per target.
+def step4_xgboost_top_percent_grid(X, y, candidate_percents=None, n_folds=5, stability_threshold=0.6):
+    """Enhanced multi-fold stability-based feature selection.
 
-    - For each target: rank features by XGBoost importance on the train split and evaluate F1 on the holdout
+    - Uses multiple CV folds instead of single split for robust feature selection
+    - Features must be consistently important across folds (stability_threshold)
+    - Evaluates top-% grid across all available risk targets (1~4)
     - Aggregate F1 across targets per percent and choose the best average
-    - Build the final feature set from the average importance across targets using the chosen percent
+    - Build the final feature set from stable features only
     """
     if candidate_percents is None:
         candidate_percents = [20, 40, 60, 80, 100]
 
-    print(f"\n📊 Step 4: XGBoost Feature Importance - top-% grid {candidate_percents} across risk_year1..4")
+    print(f"\n📊 Step 4: Enhanced Multi-Fold Feature Selection - {n_folds} folds, stability≥{stability_threshold}")
+    print(f"📊 Top-% grid {candidate_percents} across risk_year1..4")
     print("-" * 60)
 
     # Determine targets
@@ -267,7 +301,7 @@ def step4_xgboost_top_percent_grid(X, y, candidate_percents=None):
     else:
         target_cols = ['risk_year1']
 
-    # Use all numeric columns post steps 1-3
+    # Use all numeric columns post step 1
     numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
     if len(numeric_cols) == 0:
@@ -276,54 +310,87 @@ def step4_xgboost_top_percent_grid(X, y, candidate_percents=None):
 
     xgb_params = _get_step1_xgb_params()
     n_numeric = len(numeric_cols)
-    aggregated_importances = np.zeros(n_numeric, dtype=float)
+    
+    # Track feature stability across folds and targets
+    from collections import defaultdict
+    feature_selection_counts = defaultdict(int)  # How many times each feature was selected
+    total_selections = 0  # Total number of selection opportunities
+    
+    # Store F1 scores for each percentage across all folds and targets
     f1_per_percent: dict[int, list] = {pct: [] for pct in candidate_percents}
     valid_targets = 0
+
+    print(f"   🔄 Processing {len(target_cols)} targets with {n_folds}-fold validation each...")
 
     for tcol in target_cols:
         y_series = y[tcol] if isinstance(y, pd.DataFrame) else y
         mask = ~pd.isna(y_series)
         X_t = X.loc[mask, numeric_cols]
         y_t = y_series.loc[mask]
-        # Need at least 2 classes
+        
+        # Need at least 2 classes and sufficient samples
         unique_classes = pd.Series(y_t).dropna().unique()
-        if len(unique_classes) < 2 or len(X_t) < 50:
+        if len(unique_classes) < 2 or len(X_t) < 100:  # Increased minimum for stability
+            print(f"   ⚠️ Skipping {tcol}: insufficient data or classes")
             continue
 
-        # Stratified split
-        idx_train, idx_val = train_test_split(X_t.index, test_size=0.2, random_state=42, shuffle=True, stratify=y_t)
-        X_train, X_val = X_t.loc[idx_train], X_t.loc[idx_val]
-        y_train, y_val = y_t.loc[idx_train].astype(int), y_t.loc[idx_val].astype(int)
+        print(f"   📊 Processing {tcol} with {len(X_t)} samples, {len(unique_classes)} classes")
+        
+        # Multi-fold cross-validation for this target
+        for fold in range(n_folds):
+            # Different random seed for each fold to ensure variety
+            fold_seed = 42 + fold * 10
+            
+            try:
+                # Stratified split for this fold
+                idx_train, idx_val = train_test_split(
+                    X_t.index, test_size=0.2, random_state=fold_seed, 
+                    shuffle=True, stratify=y_t
+                )
+                X_train, X_val = X_t.loc[idx_train], X_t.loc[idx_val]
+                y_train, y_val = y_t.loc[idx_train].astype(int), y_t.loc[idx_val].astype(int)
+                
+                # Train model and get feature importance for this fold
+                rank_model = xgb.XGBClassifier(**xgb_params)
+                rank_model.fit(X_train, y_train)
+                
+                try:
+                    importances = rank_model.feature_importances_
+                    if importances is None or len(importances) != n_numeric:
+                        raise ValueError("invalid importances")
+                except Exception:
+                    booster = rank_model.get_booster()
+                    score_dict = booster.get_score(importance_type='gain')
+                    importances = np.array([score_dict.get(f'f{i}', 0.0) for i in range(n_numeric)], dtype=float)
+                    if importances.sum() == 0:
+                        importances = np.ones_like(importances)
 
-        # Rank on train
-        rank_model = xgb.XGBClassifier(**xgb_params)
-        rank_model.fit(X_train, y_train)
-        try:
-            importances = rank_model.feature_importances_
-            if importances is None or len(importances) != n_numeric:
-                raise ValueError("invalid importances")
-        except Exception:
-            booster = rank_model.get_booster()
-            score_dict = booster.get_score(importance_type='gain')
-            importances = np.array([score_dict.get(f'f{i}', 0.0) for i in range(n_numeric)], dtype=float)
-            if importances.sum() == 0:
-                importances = np.ones_like(importances)
+                # Build feature ranking for this fold
+                importance_df = pd.DataFrame({
+                    'feature': numeric_cols, 
+                    'importance': importances
+                }).sort_values('importance', ascending=False)
 
-        # Aggregate importances across targets (feature_importances_ are normalized by XGBoost)
-        aggregated_importances += importances
-
-        # Build per-target ranking for evaluation
-        importance_df = pd.DataFrame({'feature': numeric_cols, 'importance': importances}).sort_values('importance', ascending=False)
-
-        # Evaluate candidate percents for this target
-        for pct in candidate_percents:
-            k = max(1, int(n_numeric * pct / 100))
-            selected = importance_df.head(k)['feature'].tolist()
-            model = xgb.XGBClassifier(**xgb_params)
-            model.fit(X_train[selected], y_train)
-            pred = model.predict(X_val[selected])
-            f1 = f1_score(y_val, pred, average='macro', zero_division=0)
-            f1_per_percent[pct].append(float(f1))
+                # Test each percentage and track which features are selected
+                for pct in candidate_percents:
+                    k = max(1, int(n_numeric * pct / 100))
+                    selected_features = importance_df.head(k)['feature'].tolist()
+                    
+                    # Count selections for stability tracking
+                    for feature in selected_features:
+                        feature_selection_counts[feature] += 1
+                    total_selections += len(selected_features)
+                    
+                    # Evaluate performance with selected features
+                    model = xgb.XGBClassifier(**xgb_params)
+                    model.fit(X_train[selected_features], y_train)
+                    pred = model.predict(X_val[selected_features])
+                    f1 = f1_score(y_val, pred, average='macro', zero_division=0)
+                    f1_per_percent[pct].append(float(f1))
+                    
+            except Exception as e:
+                print(f"   ⚠️ Fold {fold+1} failed for {tcol}: {e}")
+                continue
 
         valid_targets += 1
 
@@ -331,15 +398,66 @@ def step4_xgboost_top_percent_grid(X, y, candidate_percents=None):
         print("⚠️ No valid targets for selection; skipping.")
         return X
 
-    # Choose percent with highest average F1 across targets; tie breaks on smaller percent
+    print(f"   ✅ Completed {valid_targets} targets × {n_folds} folds = {valid_targets * n_folds} evaluations")
+
+    # Choose best percentage based on average F1 across all folds and targets
     avg_f1 = {pct: (float(np.mean(scores)) if len(scores) > 0 else 0.0) for pct, scores in f1_per_percent.items()}
     best_percent = sorted(candidate_percents, key=lambda p: (-avg_f1.get(p, 0.0), p))[0]
     best_k = max(1, int(n_numeric * best_percent / 100))
 
-    # Final selection by average importances across targets
-    avg_importance_df = pd.DataFrame({'feature': numeric_cols, 'importance': aggregated_importances / valid_targets})
-    avg_importance_df = avg_importance_df.sort_values('importance', ascending=False)
-    selected_numeric = avg_importance_df.head(best_k)['feature'].tolist()
+    # Apply stability filtering: only keep features that were selected frequently enough
+    min_selections = int(valid_targets * n_folds * len(candidate_percents) * stability_threshold)
+    stable_features = [
+        feature for feature, count in feature_selection_counts.items() 
+        if count >= min_selections
+    ]
+    
+    print(f"   🎯 Stability filtering: {len(stable_features)}/{n_numeric} features stable (≥{min_selections} selections)")
+    
+    # If we have stable features, use them; otherwise fall back to top features by average importance
+    if len(stable_features) >= best_k:
+        # Use stable features, ranked by selection frequency
+        stable_feature_counts = [(f, feature_selection_counts[f]) for f in stable_features]
+        stable_feature_counts.sort(key=lambda x: x[1], reverse=True)
+        selected_numeric = [f for f, _ in stable_feature_counts[:best_k]]
+        selection_method = "stability-based"
+    else:
+        print(f"   ⚠️ Only {len(stable_features)} stable features found, falling back to importance-based selection")
+        # Fall back to traditional importance-based selection
+        aggregated_importances = np.zeros(n_numeric, dtype=float)
+        for tcol in target_cols:
+            y_series = y[tcol] if isinstance(y, pd.DataFrame) else y
+            mask = ~pd.isna(y_series)
+            X_t = X.loc[mask, numeric_cols]
+            y_t = y_series.loc[mask]
+            if len(pd.Series(y_t).dropna().unique()) < 2 or len(X_t) < 50:
+                continue
+            
+            # Single model for importance aggregation
+            idx_train, _ = train_test_split(X_t.index, test_size=0.2, random_state=42, shuffle=True, stratify=y_t)
+            X_train = X_t.loc[idx_train]
+            y_train = y_t.loc[idx_train].astype(int)
+            
+            rank_model = xgb.XGBClassifier(**xgb_params)
+            rank_model.fit(X_train, y_train)
+            
+            try:
+                importances = rank_model.feature_importances_
+            except:
+                booster = rank_model.get_booster()
+                score_dict = booster.get_score(importance_type='gain')
+                importances = np.array([score_dict.get(f'f{i}', 0.0) for i in range(n_numeric)], dtype=float)
+                if importances.sum() == 0:
+                    importances = np.ones_like(importances)
+            
+            aggregated_importances += importances
+        
+        avg_importance_df = pd.DataFrame({
+            'feature': numeric_cols, 
+            'importance': aggregated_importances / valid_targets
+        }).sort_values('importance', ascending=False)
+        selected_numeric = avg_importance_df.head(best_k)['feature'].tolist()
+        selection_method = "importance-based (fallback)"
 
     final_cols = selected_numeric + non_numeric_cols
     X_reduced = X[final_cols]
@@ -347,18 +465,26 @@ def step4_xgboost_top_percent_grid(X, y, candidate_percents=None):
     # Find removed columns
     removed_numeric_cols = [col for col in numeric_cols if col not in selected_numeric]
     
-    print("   Average F1 by percent:")
+    print("   📊 Average F1 by percent across all folds and targets:")
     for pct in candidate_percents:
-        print(f"     - {pct:>3}%: {avg_f1.get(pct, 0.0):.4f} (from {len(f1_per_percent[pct])} targets)")
-    print(f"✅ Selected top-{best_percent}% features (k={best_k}) averaged across {valid_targets} targets")
+        n_scores = len(f1_per_percent[pct])
+        avg_score = avg_f1.get(pct, 0.0)
+        std_score = np.std(f1_per_percent[pct]) if n_scores > 1 else 0.0
+        print(f"     - {pct:>3}%: {avg_score:.4f} ± {std_score:.4f} (from {n_scores} evaluations)")
     
-    # Show removed columns
+    print(f"✅ Selected top-{best_percent}% features (k={best_k}) using {selection_method}")
+    print(f"   🎯 Method: Multi-fold stability-based selection ({n_folds} folds × {valid_targets} targets)")
+    print(f"   📊 Stability threshold: {stability_threshold} (≥{min_selections} selections required)")
+    
+    # Show removed columns (limit output for readability)
     if removed_numeric_cols:
-        print(f"   🗑️ Removed columns:")
-        for i, col in enumerate(removed_numeric_cols, 1):
+        print(f"   🗑️ Removed {len(removed_numeric_cols)} columns:")
+        for i, col in enumerate(removed_numeric_cols[:10], 1):  # Show first 10
             print(f"      {i:2d}. {col}")
+        if len(removed_numeric_cols) > 10:
+            print(f"      ... and {len(removed_numeric_cols) - 10} more")
     else:
-        print("   ✅ No columns removed by XGBoost importance")
+        print("   ✅ No columns removed by feature selection")
     
     return X_reduced
 
@@ -458,17 +584,17 @@ def create_performance_comparison(y_true, y_pred_xgb_orig, y_pred_xgb_red, X_ori
     print(f"\n📊 VALIDATION RESULTS (80/20 Train/Test Split):")
     print("-" * 60)
     print(f"   🎯 XGBoost F1-Score (Macro):")
-    print(f"      • Before Step4: {metrics_xgb_orig['F1-Score']:.4f}")
-    print(f"      • After Step4:  {metrics_xgb_red['F1-Score']:.4f}")
+    print(f"      • Before Step2: {metrics_xgb_orig['F1-Score']:.4f}")
+    print(f"      • After Step2:  {metrics_xgb_red['F1-Score']:.4f}")
     print(f"      • Difference:   {metrics_xgb_red['F1-Score'] - metrics_xgb_orig['F1-Score']:+.4f}")
     print(f"   📈 XGBoost Accuracy:")
-    print(f"      • Before Step4: {metrics_xgb_orig['Accuracy']:.4f}")
-    print(f"      • After Step4:  {metrics_xgb_red['Accuracy']:.4f}")
+    print(f"      • Before Step2: {metrics_xgb_orig['Accuracy']:.4f}")
+    print(f"      • After Step2:  {metrics_xgb_red['Accuracy']:.4f}")
     print(f"      • Difference:   {metrics_xgb_red['Accuracy'] - metrics_xgb_orig['Accuracy']:+.4f}")
     
     # Create comparison plot with 2 subplots (metrics + feature counts)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle('Step 4 Feature Reduction Impact - XGBoost', fontsize=16, fontweight='bold')
+    fig.suptitle('Step 2 Feature Reduction Impact - XGBoost', fontsize=16, fontweight='bold')
 
     # 1. XGBoost Performance Metrics
     metrics_names = list(metrics_xgb_orig.keys())
@@ -479,9 +605,9 @@ def create_performance_comparison(y_true, y_pred_xgb_orig, y_pred_xgb_red, X_ori
     width = 0.35
 
     bars1 = ax1.bar(x_pos - width/2, xgb_orig_values, width, 
-                    label=f'Before Step4 ({X_orig.shape[1]} features)', alpha=0.8, color='salmon')
+                    label=f'Before Step2 ({X_orig.shape[1]} features)', alpha=0.8, color='salmon')
     bars2 = ax1.bar(x_pos + width/2, xgb_red_values, width, 
-                    label=f'After Step4 ({X_red.shape[1]} features)', alpha=0.8, color='skyblue')
+                    label=f'After Step2 ({X_red.shape[1]} features)', alpha=0.8, color='skyblue')
 
     ax1.set_xlabel('Metrics')
     ax1.set_ylabel('Score')
@@ -502,7 +628,7 @@ def create_performance_comparison(y_true, y_pred_xgb_orig, y_pred_xgb_red, X_ori
                     xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
 
     # 2. Feature Count Comparison
-    feature_counts = ['Before Step4', 'After Step4']
+    feature_counts = ['Before Step2', 'After Step2']
     counts = [X_orig.shape[1], X_red.shape[1]]
     colors = ['lightcoral', 'lightblue']
 
@@ -523,7 +649,7 @@ def create_performance_comparison(y_true, y_pred_xgb_orig, y_pred_xgb_red, X_ori
                     xytext=(0, 3), textcoords='offset points', ha='center', va='bottom')
 
     plt.tight_layout()
-    plt.savefig(f'{results_dir}/step4_performance_comparison.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{results_dir}/step2_performance_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 def create_confusion_matrix_comparison(y_true, y_pred_orig, y_pred_red, results_dir):
@@ -533,19 +659,19 @@ def create_confusion_matrix_comparison(y_true, y_pred_orig, y_pred_red, results_
     # Original model confusion matrix
     cm_orig = confusion_matrix(y_true, y_pred_orig)
     sns.heatmap(cm_orig, annot=True, fmt='d', cmap='Blues', ax=ax1)
-    ax1.set_title('Confusion Matrix - Before Step4')
+    ax1.set_title('Confusion Matrix - Before Step2')
     ax1.set_xlabel('Predicted')
     ax1.set_ylabel('Actual')
     
     # Reduced model confusion matrix  
     cm_red = confusion_matrix(y_true, y_pred_red)
     sns.heatmap(cm_red, annot=True, fmt='d', cmap='Greens', ax=ax2)
-    ax2.set_title('Confusion Matrix - After Step4')
+    ax2.set_title('Confusion Matrix - After Step2')
     ax2.set_xlabel('Predicted')
     ax2.set_ylabel('Actual')
     
     plt.tight_layout()
-    plt.savefig(f'{results_dir}/step4_confusion_matrix_comparison.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{results_dir}/step2_confusion_matrix_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_outside_exclude, removal_details=None):
@@ -554,20 +680,20 @@ def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_
     print("-" * 30)
     
     # Create results directory
-    results_dir = "result/step4_feature_reduction"
+    results_dir = "../results/step2_feature_reduction"
     os.makedirs(results_dir, exist_ok=True)
     
     # Save selected features list (with proper header)
     pd.DataFrame({'feature_name': X_reduced.columns.tolist()}).to_csv(
-        f'{results_dir}/step4_selected_features.csv', 
+        f'{results_dir}/step2_selected_features.csv', 
         index=False
     )
     
     # Save removal details if provided
     if removal_details:
         removal_df = pd.DataFrame(removal_details)
-        removal_df.to_csv(f'{results_dir}/step4_removed_features.csv', index=False)
-        print(f"📄 Removed features details saved to: {results_dir}/step4_removed_features.csv")
+        removal_df.to_csv(f'{results_dir}/step2_removed_features.csv', index=False)
+        print(f"📄 Removed features details saved to: {results_dir}/step2_removed_features.csv")
     
     # Create complete dataset: excluded columns + selected features + targets
     excluded_data = df_original[exclude_cols].copy()
@@ -580,18 +706,18 @@ def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_
     ], axis=1)
     
     # Save to dataset folder
-    dataset_path = 'dataset/credit_risk_dataset_step4.csv'
+    dataset_path = 'dataset/credit_risk_dataset_selected.csv'
     complete_dataset.to_csv(dataset_path, index=False)
         
     # Save summary
     summary = {
         'execution_date': datetime.now().isoformat(),
-        'approach': 'top_percent_grid_holdout',
+        'approach': 'multi_fold_stability_based',
         'steps': [
             '1. Correlation analysis (>0.9)',
             '2. Variance threshold (<0.001)', 
             '3. Missing values (>50%)',
-            '4. XGBoost importance top-% grid [20,40,60,80,100] (holdout)'
+            '4. Multi-fold stability-based XGBoost selection (5 folds, 60% stability threshold)'
         ],
         'final_feature_count': len(X_reduced.columns),
         'dataset_composition': {
@@ -603,7 +729,7 @@ def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_
         'non_numeric_outside_exclude': non_numeric_outside_exclude
     }
     
-    with open(f'{results_dir}/step4_summary.json', 'w', encoding='utf-8') as f:
+    with open(f'{results_dir}/step2_summary.json', 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
     
     print(f"✅ Complete dataset saved to: {dataset_path}")

@@ -1,8 +1,8 @@
 """
-XGBoost Risk Prediction Model - Step 5: Unified Temporal Validation
+XGBoost Risk Prediction Model - Step 3: Unified Temporal Validation
 ==================================================================
 
-Step 5 Implementation - Validation Strategies (Max 5):
+Step 3 Implementation - Validation Strategies (Max 5):
 1. Random Split (shuffle=True) - Performance baseline ignoring temporal characteristics
 2. Stratified Random Split (shuffle=True, stratify=y) - Baseline with class balance
 3. Simple Temporal Holdout (shuffle=False) - Basic temporal validation (past vs future)
@@ -25,6 +25,7 @@ import xgboost as xgb
 import json
 import os
 from datetime import datetime
+from typing import Optional
 from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from sklearn.metrics import f1_score, precision_score, recall_score, confusion_matrix
 import matplotlib.pyplot as plt
@@ -32,7 +33,15 @@ import seaborn as sns
 import matplotlib.font_manager as fm
 import platform
 import warnings
+import logging
 warnings.filterwarnings('ignore')
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Configure matplotlib for Korean fonts
 def setup_korean_font():
@@ -78,16 +87,16 @@ def calculate_high_risk_recall(y_true, y_pred):
             return recall_score(y_true[high_risk_mask], y_pred[high_risk_mask], average='macro', zero_division=0)
     return 0.0
 
-def load_and_prepare_step4_data():
-    """Load and prepare Step 4 data with proper temporal sorting"""
+def load_and_prepare_selected_data():
+    """Load and prepare Step 2 data with proper temporal sorting"""
     print("🚀 CORRECTED TEMPORAL VALIDATION")
     print("=" * 50)
-    print("📂 Loading Step 4 Optimized Dataset")
+    print("📂 Loading Step 2 Optimized Dataset")
     print("-" * 40)
     
-    # Load dataset from Step 4
-    df = pd.read_csv('dataset/credit_risk_dataset_step4.csv')
-    print(f"✅ Step 4 dataset loaded: {df.shape}")
+    # Load dataset from Step 2
+    df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    print(f"✅ Step 2 dataset loaded: {df.shape}")
     
     # CRITICAL: Sort by 보험청약일자 for temporal validation
     if '보험청약일자' in df.columns:
@@ -96,7 +105,7 @@ def load_and_prepare_step4_data():
     else:
         print("⚠️ 보험청약일자 not found - using index order for temporal validation")
     
-    # Define exclude columns (matching step4.py)
+    # Define exclude columns (matching step2.py)
     exclude_cols = [
         '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
     ]
@@ -530,7 +539,7 @@ def create_comprehensive_visualization(all_results, results_dir):
     
     # Create F1-Score comparison across all targets
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Step 5: Temporal Validation Strategy Comparison - All Targets', fontsize=16, fontweight='bold')
+    fig.suptitle('Step 3: Temporal Validation Strategy Comparison - All Targets', fontsize=16, fontweight='bold')
     
     for idx, target in enumerate(targets):
         ax = [ax1, ax2, ax3, ax4][idx]
@@ -560,7 +569,7 @@ def create_comprehensive_visualization(all_results, results_dir):
             ax.tick_params(axis='x', rotation=45)
     
     plt.tight_layout()
-    plt.savefig(f'{results_dir}/step5_comprehensive_comparison.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{results_dir}/step3_comprehensive_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
     
     print("✅ Comprehensive visualization created successfully")
@@ -644,7 +653,7 @@ def save_results(all_results, best_selection, results_dir):
     os.makedirs(results_dir, exist_ok=True)
     
     # Save detailed results
-    with open(f'{results_dir}/step5_comprehensive_results.json', 'w', encoding='utf-8') as f:
+    with open(f'{results_dir}/step3_comprehensive_results.json', 'w', encoding='utf-8') as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
     
     # Save summary
@@ -663,21 +672,21 @@ def save_results(all_results, best_selection, results_dir):
         }
     }
     
-    with open(f'{results_dir}/step5_summary.json', 'w', encoding='utf-8') as f:
+    with open(f'{results_dir}/step3_summary.json', 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
     
     print(f"✅ Results saved to: {results_dir}")
-    print(f"   📄 Comprehensive results: step5_comprehensive_results.json")
-    print(f"   📋 Summary: step5_summary.json")
-    print(f"   📊 Visualization: step5_comprehensive_comparison.png")
+    print(f"   📄 Comprehensive results: step3_comprehensive_results.json")
+    print(f"   📋 Summary: step3_summary.json")
+    print(f"   📊 Visualization: step3_comprehensive_comparison.png")
     
     return results_dir
 
 def main():
     """Main execution - Corrected Temporal Validation"""
     
-    # Load and prepare Step 4 data with proper temporal sorting
-    df, X, y, exclude_cols, target_cols = load_and_prepare_step4_data()
+    # Load and prepare Step 2 data with proper temporal sorting
+    df, X, y, exclude_cols, target_cols = load_and_prepare_selected_data()
     
     print(f"\n🔬 CORRECTED TEMPORAL VALIDATION ENGINE")
     print("=" * 60)
@@ -694,7 +703,7 @@ def main():
         all_results[target_name] = results
     
     # Create comprehensive visualization
-    results_dir = 'result/step5_temporal_validation'
+    results_dir = 'result/step3_temporal_validation'
     create_comprehensive_visualization(all_results, results_dir)
     
     # Select best unified approach
