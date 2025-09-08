@@ -92,7 +92,7 @@ def load_selected_data():
     print("🚀 MODEL ARCHITECTURE EXPERIMENTS - STEP 6")
     print("=" * 70)
     
-    df = pd.read_csv('dataset/credit_risk_dataset_selected.csv')
+    df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
     print(f"✅ Step 2 dataset loaded: {df.shape}")
     
     # Sort by 보험청약일자 for temporal validation
@@ -514,7 +514,7 @@ def save_step6_results(phase1_results, phase2_results, final_selection):
     print(f"\n💾 Saving Step 6 Results")
     print("-" * 30)
     
-    results_dir = 'result/step6_model_architecture'
+    results_dir = '../results/step6_model_architecture'
     os.makedirs(results_dir, exist_ok=True)
     
     # Save detailed results

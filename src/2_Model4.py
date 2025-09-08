@@ -15,8 +15,8 @@ Key Improvement:
 - Previous versions gave XGBoost unfair advantage with native missing value handling
 
 Outputs:
-- Per model/target metrics JSON: result/step4_model_comparison_temporal/metrics/step4_<model>_<target>.json
-- Summary JSON: result/step4_model_comparison_temporal/step4_summary.json
+- Per model/target metrics JSON: ../results/step4_model_comparison_temporal/metrics/step4_<model>_<target>.json
+- Summary JSON: ../results/step4_model_comparison_temporal/step4_summary.json
 """
 
 from __future__ import annotations
@@ -568,7 +568,7 @@ def create_model_comparison_visualizations(
 def main():
     df, X, y, exclude_cols, target_cols = load_and_prepare_selected_data()
 
-    results_dir = 'result/step4_model_comparison_temporal'
+    results_dir = '../results/step4_model_comparison_temporal'
     os.makedirs(results_dir, exist_ok=True)
 
     print("\n🔬 TEMPORAL COMPARISON ENGINE (Rolling Window)")

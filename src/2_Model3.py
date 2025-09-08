@@ -703,7 +703,7 @@ def main():
         all_results[target_name] = results
     
     # Create comprehensive visualization
-    results_dir = 'result/step3_temporal_validation'
+    results_dir = '../results/step3_temporal_validation'
     create_comprehensive_visualization(all_results, results_dir)
     
     # Select best unified approach

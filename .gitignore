@@ -3,6 +3,7 @@ data/
 results/
 trashcan/
 sql/
+logs/
 
 # Data files
 *.csv

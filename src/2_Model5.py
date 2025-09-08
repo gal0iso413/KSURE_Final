@@ -97,7 +97,7 @@ def load_selected_data():
     print("🚀 CLASS IMBALANCE STRATEGY (SIMPLIFIED) - STEP 5 IMPLEMENTATION")
     print("=" * 70)
     
-    df = pd.read_csv('dataset/credit_risk_dataset_selected.csv')
+    df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
     print(f"✅ Step 2 dataset loaded: {df.shape}")
     
     # Sort by 보험청약일자 for temporal validation
@@ -623,7 +623,7 @@ def main():
 
     best_selection = select_best_imbalance_method(all_results)
 
-    results_dir = 'result/step5_class_imbalance'
+    results_dir = '../results/step5_class_imbalance'
     save_enhanced_results(all_results, best_selection, results_dir)
 
     # Create comprehensive visualizations

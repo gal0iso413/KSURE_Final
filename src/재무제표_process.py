@@ -26,7 +26,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('financial_processing.log'),
+        logging.FileHandler('../logs/financial_processing.log'),
         logging.StreamHandler()
     ]
 )

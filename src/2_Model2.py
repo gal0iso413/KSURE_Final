@@ -706,7 +706,7 @@ def save_results(df_original, X_reduced, exclude_cols, target_cols, non_numeric_
     ], axis=1)
     
     # Save to dataset folder
-    dataset_path = 'dataset/credit_risk_dataset_selected.csv'
+    dataset_path = '../data/processed/credit_risk_dataset_selected.csv'
     complete_dataset.to_csv(dataset_path, index=False)
         
     # Save summary

@@ -180,7 +180,7 @@ def load_split_datasets_for_grading() -> Tuple[pd.DataFrame, pd.DataFrame, pd.Da
     Returns:
         Tuple of (train_data, validation_data, oot_data)
     """
-    split_dir = "data_splits"
+    split_dir = "../data/splits"
     
     train_data = pd.read_csv(os.path.join(split_dir, "train_data.csv"))
     validation_data = pd.read_csv(os.path.join(split_dir, "validation_data.csv"))

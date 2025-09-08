@@ -22,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('special_processing.log'),
+        logging.FileHandler('../logs/special_processing.log'),
         logging.StreamHandler()
     ]
 )

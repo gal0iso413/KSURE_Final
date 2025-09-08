@@ -505,7 +505,7 @@ class MultiModelTrainer:
 def get_training_config():
     """Configuration for Step 1 multi-model training"""
     return {
-        'data_path': 'dataset/credit_risk_dataset.csv',
+        'data_path': '../data/processed/credit_risk_dataset.csv',
         'exclude_columns': [
             '사업자등록번호',
             '대상자명',
