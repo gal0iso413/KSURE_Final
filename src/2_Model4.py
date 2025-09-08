@@ -98,7 +98,8 @@ def load_and_prepare_selected_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.Dat
     print("📂 Loading Step 2 Optimized Dataset")
     print("-" * 40)
 
-    df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    base_df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    df = base_df[base_df['data_split'] == 'development']
     print(f"✅ Step 2 dataset loaded: {df.shape}")
 
     # Sort by 보험청약일자 to preserve temporal order
@@ -109,7 +110,7 @@ def load_and_prepare_selected_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.Dat
         print("⚠️ 보험청약일자 not found - using index order for temporal validation")
 
     exclude_cols = [
-        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1', 'unique_id', 'data_split'
     ]
 
     target_cols = [c for c in df.columns if c.startswith('risk_year')]

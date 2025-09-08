@@ -97,7 +97,8 @@ def load_selected_data():
     print("🚀 CLASS IMBALANCE STRATEGY (SIMPLIFIED) - STEP 5 IMPLEMENTATION")
     print("=" * 70)
     
-    df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    base_df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    df = base_df[base_df['data_split'] == 'development']
     print(f"✅ Step 2 dataset loaded: {df.shape}")
     
     # Sort by 보험청약일자 for temporal validation
@@ -106,7 +107,7 @@ def load_selected_data():
         print(f"✅ Data sorted by 보험청약일자 for temporal validation")
     
     exclude_cols = [
-        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1', 'unique_id', 'data_split'
     ]
     
     target_cols = [col for col in df.columns if col.startswith('risk_year')]

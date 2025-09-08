@@ -62,8 +62,8 @@ TUNING_CONFIG = {
 }
 
 # Derived settings
-RESULTS_DIR = 'result/step7_optuna'
-DATASET_PATH = 'dataset/credit_risk_dataset_selected.csv'
+RESULTS_DIR = '../results/step7_optuna'
+DATASET_PATH = '../data/processed/credit_risk_dataset_selected.csv'
 
 # -----------------------------------------------------------------------------
 # Utilities (shared across all configurations)

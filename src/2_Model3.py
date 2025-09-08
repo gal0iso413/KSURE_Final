@@ -95,7 +95,8 @@ def load_and_prepare_selected_data():
     print("-" * 40)
     
     # Load dataset from Step 2
-    df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    base_df = pd.read_csv('../data/processed/credit_risk_dataset_selected.csv')
+    df = base_df[base_df['data_split'] == 'development']
     print(f"✅ Step 2 dataset loaded: {df.shape}")
     
     # CRITICAL: Sort by 보험청약일자 for temporal validation
@@ -107,7 +108,7 @@ def load_and_prepare_selected_data():
     
     # Define exclude columns (matching step2.py)
     exclude_cols = [
-        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1'
+        '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1', 'unique_id', 'data_split'
     ]
     
     # Separate features and targets

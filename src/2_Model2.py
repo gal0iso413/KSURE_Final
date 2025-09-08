@@ -76,29 +76,42 @@ sns.set_palette("husl")
 
 def load_data():
     """
-    🔄 FIXED: Load ONLY TRAIN data for feature selection (no data leakage!)
-    This ensures feature selection rules are created without seeing validation/OOT data.
+    🔄 UPDATED: Create DEVELOPMENT/TEST split (methodologically sound)
+    This creates a clean development/test split where development data is used for all model development.
     """
-    logger.info("FEATURE REDUCTION PIPELINE - STRICT DATA SEPARATION")
-    logger.info("Loading TRAIN DATA ONLY (No Leakage!)")
+    logger.info("FEATURE REDUCTION PIPELINE - DEVELOPMENT/TEST SPLIT")
+    logger.info("Creating DEVELOPMENT/TEST split for clean methodology")
     
-    # 🔄 CRITICAL CHANGE: Load ONLY train data for feature selection
     try:
         train_df = pd.read_csv('../data/splits/train_data.csv')
-        logger.info(f"TRAIN dataset loaded: {train_df.shape}")
-        logger.info(f"   Period: {train_df['보험청약일자'].min()} to {train_df['보험청약일자'].max()}")
-        
-        # Also load validation and OOT for applying the same feature selection rules
         validation_df = pd.read_csv('../data/splits/validation_data.csv')
         oot_df = pd.read_csv('../data/splits/oot_data.csv')
         
-        logger.info(f"Data splits loaded:")
-        logger.info(f"   - TRAIN: {len(train_df):,} rows (for feature selection rules)")
-        logger.info(f"   - VALIDATION: {len(validation_df):,} rows (for rule application)")
-        print(f"   - OOT: {len(oot_df):,} rows (for rule application)")
+        logger.info(f"Original splits loaded:")
+        logger.info(f"   - TRAIN: {len(train_df):,} rows")
+        logger.info(f"   - VALIDATION: {len(validation_df):,} rows")
+        logger.info(f"   - OOT: {len(oot_df):,} rows")
         
-        # Combine all data for final dataset creation (but selection rules from TRAIN only)
-        df_complete = pd.concat([train_df, validation_df, oot_df], ignore_index=True)
+        # Create new split: DEVELOPMENT (train+validation) and TEST (OOT)
+        # Update data_split column to reflect new structure
+        train_df = train_df.copy()
+        validation_df = validation_df.copy()
+        oot_df = oot_df.copy()
+        
+        train_df['data_split'] = 'development'
+        validation_df['data_split'] = 'development'
+        oot_df['data_split'] = 'test'
+        
+        # Combine into development and test datasets
+        dev_df = pd.concat([train_df, validation_df], ignore_index=True)
+        test_df = oot_df.copy()
+        
+        logger.info(f"New split created:")
+        logger.info(f"   - DEVELOPMENT: {len(dev_df):,} rows (for all model development)")
+        logger.info(f"   - TEST: {len(test_df):,} rows (reserved for final evaluation)")
+        
+        # Complete dataset for final output
+        df_complete = pd.concat([dev_df, test_df], ignore_index=True)
         
     except FileNotFoundError:
         print("❌ ERROR: Split datasets not found!")
@@ -110,20 +123,21 @@ def load_data():
         '사업자등록번호', '대상자명', '청약번호', '보험청약일자', '수출자대상자번호', '업종코드1', 'unique_id', 'data_split'
     ]
     
-    # Separate features and targets (use TRAIN data for feature selection rules)
-    target_cols = [col for col in train_df.columns if col.startswith('risk_year')]
-    feature_cols = [col for col in train_df.columns if col not in target_cols + exclude_cols]
+    # Separate features and targets (use DEVELOPMENT data for feature selection rules)
+    target_cols = [col for col in dev_df.columns if col.startswith('risk_year')]
+    feature_cols = [col for col in dev_df.columns if col not in target_cols + exclude_cols]
     
     print(f"📋 Excluded columns: {len(exclude_cols)}")
     print(f"🎯 Target columns: {len(target_cols)}")
     print(f"📊 Features: {len(feature_cols)}")
-    print(f"⚠️  IMPORTANT: Feature selection rules based on TRAIN data only!")
+    print(f"⚠️  IMPORTANT: Feature selection rules based on DEVELOPMENT data only!")
+    print(f"⚠️  TEST data reserved for final evaluation only!")
     
-    # Use TRAIN data for feature selection
-    X_train = train_df[feature_cols]
-    y_train = train_df[target_cols]
+    # Use DEVELOPMENT data for feature selection
+    X_dev = dev_df[feature_cols]
+    y_dev = dev_df[target_cols]
     
-    return df_complete, X_train, y_train, exclude_cols, target_cols
+    return df_complete, X_dev, y_dev, exclude_cols, target_cols
 
 def audit_non_numeric_columns(X: pd.DataFrame, exclude_cols: list):
     """Identify non-numeric columns that are not part of exclude columns.
