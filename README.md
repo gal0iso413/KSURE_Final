@@ -47,9 +47,9 @@ KSURE_Final/
 │   │   └── credit_risk_dataset_selected.csv # Selected features
 │   │
 │   └── splits/                         # Data splits from 1_Split.py
-│       ├── train_data.csv              # Training data
-│       ├── validation_data.csv         # Validation data
-│       ├── oot_data.csv                # Out-of-time test data
+│       ├── train_data.csv              # Training data (part of development)
+│       ├── validation_data.csv         # Validation data (part of development)
+│       ├── oot_data.csv                # Test data (final evaluation)
 │       └── split_metadata.json         # Split information
 │
 ├── 📁 models/                          # Trained models
@@ -93,7 +93,8 @@ cd src/
 python 1_Dataset.py          # Create comprehensive dataset
 python 1_Split.py             # Split data (train/validation/OOT)
 
-# Step 2: Skip 2_Model* files (they are comparison experiments)
+# Step 2: Feature Selection & Model Development
+python 2_Model2.py            # Feature selection (development/test split)
 
 # Step 3: Main Model Pipeline
 python 3_Model8.py            # Advanced modeling techniques
@@ -110,11 +111,8 @@ cd src/
 
 # After running 1_Dataset.py and 1_Split.py...
 
-# Model Comparison Experiments (Optional)
-python 2_Model1_baseline.py   # Baseline models (XGBoost, MLP, RandomForest)
-python 2_Model1_evaluate.py   # Evaluate baseline models
-python 2_Model1_explore.py    # Explore model performance
-python 2_Model2.py            # Feature reduction experiments
+# Model Development Experiments (Optional)
+python 2_Model2.py            # Feature selection (development/test split)
 python 2_Model3.py            # Temporal validation experiments
 python 2_Model4.py            # Model comparison experiments
 python 2_Model5.py            # Class imbalance handling experiments
@@ -137,7 +135,7 @@ python 2_Model7.py            # Hyperparameter optimization experiments
 
 ### **Model Architecture**
 - **Multi-horizon Prediction**: Separate risk predictions for 1, 2, 3, and 4 years
-- **Temporal Validation**: Strict time-based data splitting to prevent leakage
+- **Temporal Validation**: Development/test split with strict time-based validation to prevent leakage
 - **Feature Engineering**: Lookback periods, change rates, and temporal aggregations
 - **Class Imbalance Handling**: Advanced techniques for rare default events
 - **Ensemble Methods**: Multiple algorithms with optimal weighting
@@ -162,7 +160,8 @@ After running the pipeline, you will have:
 
 ### **Current Status**
 - ✅ Files have been reorganized into logical directory structure
-- ⚠️ **File paths in Python scripts need updating** (currently in progress)
+- ✅ **Development/Test split methodology implemented** (2_Model2.py creates clean split)
+- ✅ **Models 3-7 use development data only** (filter by data_split column)
 - ✅ All original functionality preserved
 
 ### **Data Requirements**
@@ -185,10 +184,11 @@ After running the pipeline, you will have:
 4. **Missing Data**: Verify all source files are present in `data/raw/`
 
 ### **Next Steps for Setup**
-1. Update file paths in all Python scripts
-2. Test data loading and processing
-3. Verify model training pipeline
-4. Validate final outputs and grades
+1. Run 1_Dataset.py and 1_Split.py to create initial data splits
+2. Run 2_Model2.py to create development/test split and feature selection
+3. Run Models 3-7 for model development (use development data only)
+4. Run 3_Model8.py → 4_Model9.py → 5_Model10.py for final pipeline
+5. Validate final outputs and grades
 
 ## 📞 Support
 
